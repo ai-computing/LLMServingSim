@@ -1,3 +1,4 @@
+import fcntl
 import json
 import yaml
 import math
@@ -241,6 +242,14 @@ def build_cluster_config(astra_sim, cluster_config_path, enable_local_offloading
         
         # Calculate the total number of NPUs and create a mapping for each instance
         npu_mem_enabled = False  # only one type of npu memory config is supported for now (latency & bandwidth)
+        # ASTRA-Sim's system.json holds a single global local-mem-bw. In
+        # heterogeneous P/D, prefer the decode instance's mem_bw since decode
+        # is the memory-bound phase that benefits most from accurate modeling.
+        # Falls back to the first instance for homogeneous / combined-only.
+        _primary_npu_mem = next(
+            (inst.get("npu_mem") for inst in instances if inst.get("pd_type") == "decode"),
+            instances[0].get("npu_mem"),
+        )
 
         for idx, instance in enumerate(instances):
             npu_mem = instance.get("npu_mem")
@@ -258,21 +267,29 @@ def build_cluster_config(astra_sim, cluster_config_path, enable_local_offloading
             
             if not npu_mem_enabled:
                 # insert to system configuration
-                with open(system_config_path) as f:
-                    system_config = json.load(f)
-
-                # sync local-mem-bw in system config with npu_mem bw
-                system_config["local-mem-bw"] = int(npu_mem["mem_bw"])
-
-                with open(system_config_path, "w", encoding="utf-8") as f:
-                    json.dump(system_config, f, ensure_ascii=False, indent=2)
+                # Use an exclusive file lock to avoid a race condition when
+                # multiple simulations run concurrently and all try to
+                # read-modify-write the same shared system.json.
+                lock_path = system_config_path + ".lock"
+                with open(lock_path, "w") as _lock_f:
+                    fcntl.flock(_lock_f, fcntl.LOCK_EX)
+                    try:
+                        with open(system_config_path) as f:
+                            system_config = json.load(f)
+                        # sync local-mem-bw with the primary npu_mem (decode
+                        # instance in heterogeneous P/D, else first instance)
+                        system_config["local-mem-bw"] = int(_primary_npu_mem["mem_bw"])
+                        with open(system_config_path, "w", encoding="utf-8") as f:
+                            json.dump(system_config, f, ensure_ascii=False, indent=2)
+                    finally:
+                        fcntl.flock(_lock_f, fcntl.LOCK_UN)
                 
                 # add memory if local offloading is enabled
                 if enable_local_offloading:
                     memory_config["local_mem"] = {
                         "memory-type": "PER_NPU_MEMORY_EXPANSION",
-                        "mem-bw": npu_mem["mem_bw"],
-                        "mem-latency": npu_mem["mem_latency"]
+                        "mem-bw": _primary_npu_mem["mem_bw"],
+                        "mem-latency": _primary_npu_mem["mem_latency"]
                     }
                 npu_mem_enabled = True
 

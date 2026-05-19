@@ -2129,40 +2129,37 @@ def _get_perf_row(perf_db, hardware, layer_name, input_len, kv_cache_len, tp_siz
     try:
         return perf_db[key]
     except KeyError:
-        if hardware.lower().startswith("tpu"):
-            target_layer = str(layer_name)
-            target_tp = int(tp_size)
-            target_kv = int(kv_cache_len)
-            target_input = int(input_len)
+        target_layer = str(layer_name)
+        target_tp = int(tp_size)
+        target_kv = int(kv_cache_len)
+        target_input = int(input_len)
 
-            best_row = None
-            best_diff = None
-            best_kv_match = False
+        best_row = None
+        best_diff = None
+        best_kv_match = False
 
-            for (layer, inp, kv, tp), row in perf_db.items():
-                if layer != target_layer or tp != target_tp:
-                    continue
+        for (layer, inp, kv, tp), row in perf_db.items():
+            if layer != target_layer or tp != target_tp:
+                continue
 
-                kv_match = kv == target_kv
-                diff = abs(inp - target_input)
+            kv_match = kv == target_kv
+            diff = abs(inp - target_input)
 
-                if (
-                    best_row is None
-                    or (kv_match and not best_kv_match)
-                    or (kv_match == best_kv_match and diff < best_diff)
-                ):
-                    best_row = row
-                    best_diff = diff
-                    best_kv_match = kv_match
+            if (
+                best_row is None
+                or (kv_match and not best_kv_match)
+                or (kv_match == best_kv_match and diff < best_diff)
+            ):
+                best_row = row
+                best_diff = diff
+                best_kv_match = kv_match
 
-            if best_row is not None:
-                return best_row
-            else:
-                return {"layer_name": layer_name, "input": input_len, "kv_cache": kv_cache_len, "tp_size": tp_size, "latency(ns)": 1}
-        else: 
-            raise KeyError(
-                f"No perf entry for key={key} in performance DB."
-            )
+        if best_row is not None:
+            return best_row
+
+        raise KeyError(
+            f"No perf entry for key={key} in performance DB."
+        )
     
 def _get_attn_perf_row(perf_db, key):
     try:
