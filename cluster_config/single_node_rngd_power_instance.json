@@ -29,10 +29,10 @@
                 "base_node_power": 60,
                 "npu": {
                     "RNGD": {
-                        "idle_power": 37.44,
+                        "idle_power": 38.40,
                         "standby_power": 38.40,
-                        "active_power": 150,
-                        "standby_duration": 2
+                        "active_power": 152.64,
+                        "standby_duration": 6
                     }
                 },
                 "cpu": {

@@ -1,9 +1,14 @@
 import torch
+import torch.nn.functional as F
 from torch.profiler import profile, ProfilerActivity, record_function
 from typing import Any
 import gc
 
-from flash_attn import flash_attn_varlen_func
+try:
+    from flash_attn import flash_attn_varlen_func
+    _FLASH_ATTN_AVAILABLE = True
+except ImportError:
+    _FLASH_ATTN_AVAILABLE = False
 
 from profiler.utils import ProfileMethod
 from profiler.utils.logger import *
@@ -63,6 +68,26 @@ def _build_varlen_qkv(
 
     return Q, K, V, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k
 
+
+def _sdpa_attention(Q, K, V, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k,
+                    dropout_p=0.0, causal=True):
+    """PyTorch SDPA fallback for flash_attn_varlen_func. Used when flash_attn is unavailable."""
+    batch = cu_seqlens_q.shape[0] - 1
+    num_heads = Q.shape[1]
+    num_kv_heads = K.shape[1]
+    head_dim = Q.shape[2]
+    # Allocate properly-shaped [batch, heads, seq, head_dim] tensors for SDPA
+    q = torch.randn(batch, num_heads, max_seqlen_q, head_dim, device=Q.device, dtype=Q.dtype)
+    k = torch.randn(batch, num_kv_heads, max_seqlen_k, head_dim, device=K.device, dtype=K.dtype)
+    v = torch.randn(batch, num_kv_heads, max_seqlen_k, head_dim, device=V.device, dtype=V.dtype)
+    # GQA: expand kv heads to match q heads if needed
+    if num_kv_heads < num_heads:
+        repeat = num_heads // num_kv_heads
+        k = k.repeat_interleave(repeat, dim=1)
+        v = v.repeat_interleave(repeat, dim=1)
+    return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=causal)
+
+
 # -------------------------------------------------------
 # Profile FA kernel
 # -------------------------------------------------------
@@ -87,6 +112,9 @@ def profile_flash_attention(
     2) profiles FA varlen kernel latency
     3) calls build_metadata()
     """
+
+    attn_fn = flash_attn_varlen_func if _FLASH_ATTN_AVAILABLE else _sdpa_attention
+    attn_backend = "FLASH_ATTENTION" if _FLASH_ATTN_AVAILABLE else "SDPA"
 
     timer_stats_store = TimerStatsStore(profile_method=profile_method)
 
@@ -119,7 +147,7 @@ def profile_flash_attention(
     try:
         for _ in range(warmup):
             with torch.no_grad():
-                _ = flash_attn_varlen_func(
+                _ = attn_fn(
                     Q,
                     K,
                     V,
@@ -149,7 +177,7 @@ def profile_flash_attention(
                     if attention_input.is_prefill:
                         with torch.no_grad():
                             with prefill_timer:
-                                _ = flash_attn_varlen_func(
+                                _ = attn_fn(
                                     Q,
                                     K,
                                     V,
@@ -163,7 +191,7 @@ def profile_flash_attention(
                     else:
                         with torch.no_grad():
                             with decode_timer:
-                                _ = flash_attn_varlen_func(
+                                _ = attn_fn(
                                     Q,
                                     K,
                                     V,
@@ -183,7 +211,7 @@ def profile_flash_attention(
                 if attention_input.is_prefill:
                     with torch.no_grad():
                         with prefill_timer:
-                            _ = flash_attn_varlen_func(
+                            _ = attn_fn(
                                 Q,
                                 K,
                                 V,
@@ -197,7 +225,7 @@ def profile_flash_attention(
                 else:
                     with torch.no_grad():
                         with decode_timer:
-                            _ = flash_attn_varlen_func(
+                            _ = attn_fn(
                                 Q,
                                 K,
                                 V,
@@ -223,7 +251,7 @@ def profile_flash_attention(
             "prefill_chunk_size": attention_input.prefill_chunk_size,
             "kv_cache_size": attention_input.kv_cache_size,
             "is_prefill": attention_input.is_prefill,
-            "attention_backend": "FLASH_ATTENTION",
+            "attention_backend": attn_backend,
         }
 
     except torch.cuda.OutOfMemoryError:
