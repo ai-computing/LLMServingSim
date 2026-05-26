@@ -50,7 +50,9 @@ def generate_trace(batch, hardware, npu_num, npu_group, pd_type=None, node_id=0,
     load_size = batch.load
     evict_size = batch.evict
 
-    output_path = f"inputs/trace/{hardware}/{batch.model}/instance{instance_id}_batch{batch.batch_id}.txt"
+    # PID_TAG keeps this path unique per main.py process so concurrent sweep
+    # configs don't race on the same trace file (see utils.py:PID_TAG).
+    output_path = f"inputs/trace/{hardware}/{batch.model}/{PID_TAG}instance{instance_id}_batch{batch.batch_id}.txt"
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     # make trace
@@ -1809,8 +1811,8 @@ def generate_event(alarm):
     misc = 'NONE'
     result.append([layer_name, comp_time, input_loc, input_size, weight_loc, weight_size, output_loc, output_size, comm_type, comm_size, misc])
 
-    # write to the text file
-    output_path = f"inputs/trace/event_handler.txt"
+    # write to the text file (PID_TAG: avoid concurrent-process collision)
+    output_path = f"inputs/trace/{PID_TAG}event_handler.txt"
     with open(output_path, 'w') as f:
         f.write(f"EVENT\n")
         f.write(f'{len(result)}'+'\n') # length of the text is 1

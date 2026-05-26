@@ -288,11 +288,24 @@
         return out;
     }
 
+    // Power profile captured from the most recently loaded cluster config
+    // (set in ccLoad). Forwarded via workload so each sweep variant runs
+    // power simulation. Null until the user loads a config with a `power`
+    // block; cleared by ccClearLoadedPower (e.g. when starting a fresh config).
+    let _loadedPowerTemplate = null;
+
     function collectWorkload() {
+        // Per-sweep timeout override. Falls back to the CONFIG_TIMEOUT_S
+        // default in webapp/config.py when blank or invalid. Lower bound 10s
+        // mirrors the HTML min= attribute.
+        const timeoutRaw = parseInt(document.getElementById('timeout-s').value, 10);
+        const timeoutS = (Number.isFinite(timeoutRaw) && timeoutRaw >= 10) ? timeoutRaw : null;
         return {
             dataset: document.getElementById('dataset-select').value,
             num_req: parseInt(document.getElementById('num-req').value, 10) || 100,
             phase: (document.querySelector('input[name="phase"]:checked') || {}).value || 'full',
+            power_template: _loadedPowerTemplate,
+            timeout_s: timeoutS,
         };
     }
 
@@ -676,7 +689,14 @@
             document.getElementById('cc-link-latency').value = cfg.link_latency ?? 0;
             document.getElementById('cc-nodes').innerHTML    = '';
             for (const node of cfg.nodes || []) addCcNodeRow(node);
-            setCcStatus('');
+            // Capture node-level `power` block for the sweep runner. The cc-*
+            // form has no power inputs yet, so this is the only way an existing
+            // power profile gets carried through enumerate → run.
+            const firstPower = (cfg.nodes || []).map(n => n && n.power).find(p => p);
+            _loadedPowerTemplate = firstPower || null;
+            setCcStatus(firstPower
+                ? `Loaded (power modeling enabled from ${path})`
+                : '');
             syncScenarioFromConfig(cfg);
         } catch (e) {
             toast('Load error: ' + e.message, 'error');

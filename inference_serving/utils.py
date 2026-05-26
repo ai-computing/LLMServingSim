@@ -42,11 +42,24 @@ _FMT = (
     "\n"
 )
 
+# Per-process tag used to namespace ASTRA-Sim's shared
+# inputs/trace/ and inputs/workload/ directories. Without this, multiple
+# concurrent main.py subprocesses (spawned by the webapp sweep runner with
+# MAX_CONCURRENT > 1) race on the same trace files — one process reads a
+# half-written line and re.findall returns a variable-length token list,
+# eventually crashing trace_generator.py:127 with
+# "TypeError: formatter() missing N required positional arguments".
+# PID is stable for the lifetime of this Python process, so all writers
+# and readers in the same simulation see the same path. Re-exported via
+# `from .utils import *` so trace_generator.py shares the same value.
+PID_TAG = f"pid{os.getpid()}_"
+
+
 def get_workload(batch, hardware, instance_id=0, event=False):
     if event:
-        file_name = 'event_handler'
+        file_name = f'{PID_TAG}event_handler'
     else:
-        file_name = f'{hardware}/{batch.model}/instance{instance_id}_batch{batch.batch_id}'
+        file_name = f'{hardware}/{batch.model}/{PID_TAG}instance{instance_id}_batch{batch.batch_id}'
 
     cwd = os.getcwd()
     return cwd+f"/inputs/workload/{file_name}/llm"

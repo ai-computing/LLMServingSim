@@ -418,6 +418,21 @@ def _enum_multi_group(
         if all_combined and len({g["hardware"] for g in groups}) > 1:
             continue
 
+        # Heterogeneous P/D + many combined-mode bridges: ASTRA-Sim's
+        # collective routing hangs when the topology is dominated by
+        # combined instances of mixed hardware sitting between prefill and
+        # decode. Empirical signature from the 4xH100_4xRNGD sweep: configs
+        # with `combined_count > prefill_count + decode_count` made 0
+        # progress before timing out (no progress lines in 120s). Block to
+        # spare users wasted slots; misses ~4/12 borderline timeouts but
+        # never blocks a successful run.
+        if len({g["hardware"] for g in groups}) > 1:
+            n_p = sum(1 for r in role_combo if r == "prefill")
+            n_d = sum(1 for r in role_combo if r == "decode")
+            n_c = sum(1 for r in role_combo if r == "combined")
+            if n_c > 0 and n_p > 0 and n_d > 0 and n_c > n_p + n_d:
+                continue
+
         # Build per-group layout candidates for this role assignment.
         per_group_layouts: list[list[InstanceSpec]] = []
         valid = True

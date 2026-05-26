@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import signal
 import time
 from datetime import datetime, timezone
@@ -142,6 +143,34 @@ async def _update_sweep_state(
     await _broadcast(sweep_id, event)
 
 
+def _cleanup_pid_artifacts(pid: int) -> None:
+    """Remove ASTRA-Sim trace/workload files left by a finished main.py PID.
+
+    trace_generator.py / utils.py namespace per-process artifacts under
+    `pidNNNN_` to avoid concurrent-write races (see utils.py:PID_TAG). This
+    runs after each per-config subprocess exits so the shared
+    `astra-sim/inputs/{trace,workload}/` dirs don't accumulate stale files
+    across many sweeps. Best-effort: errors are swallowed since the run
+    has already completed and partial cleanup is harmless.
+    """
+    tag = f"pid{pid}_"
+    astra_inputs = REPO_ROOT / "astra-sim" / "inputs"
+    for sub in ("trace", "workload"):
+        root = astra_inputs / sub
+        if not root.is_dir():
+            continue
+        # rglob walks all depths; covers trace/{hw}/{model}/pidN_*.txt,
+        # trace/pidN_event_handler.txt, workload/{hw}/{model}/pidN_*/...
+        for path in root.rglob(f"{tag}*"):
+            try:
+                if path.is_file() or path.is_symlink():
+                    path.unlink()
+                elif path.is_dir():
+                    shutil.rmtree(path, ignore_errors=True)
+            except OSError:
+                pass
+
+
 async def _run_one_config(
     sweep_id: str,
     sweep_dir: Path,
@@ -232,9 +261,19 @@ async def _run_one_config(
 
         _running_procs.setdefault(sweep_id, {})[label] = proc
 
+        # Per-sweep timeout override from workload.timeout_s (set by the
+        # "Timeout (s)" input next to Run Sweep). Falls back to the global
+        # CONFIG_TIMEOUT_S default when unset / invalid.
+        try:
+            timeout_s = int(workload.get("timeout_s") or CONFIG_TIMEOUT_S)
+            if timeout_s < 10:
+                timeout_s = CONFIG_TIMEOUT_S
+        except (TypeError, ValueError):
+            timeout_s = CONFIG_TIMEOUT_S
+
         timed_out = False
         try:
-            await asyncio.wait_for(proc.wait(), timeout=CONFIG_TIMEOUT_S)
+            await asyncio.wait_for(proc.wait(), timeout=timeout_s)
         except asyncio.TimeoutError:
             timed_out = True
             try:
@@ -255,6 +294,9 @@ async def _run_one_config(
         finally:
             log_file.close()
             _running_procs.get(sweep_id, {}).pop(label, None)
+            # Subprocess is finished — sweep up its PID-tagged trace/workload
+            # files so the shared astra-sim/inputs/ dirs stay tidy across runs.
+            _cleanup_pid_artifacts(proc.pid)
 
         elapsed = time.monotonic() - start
 
@@ -269,7 +311,7 @@ async def _run_one_config(
             await _update_config_state(
                 sweep_id, sweep_dir, label,
                 {"state": "failed", "elapsed_s": elapsed,
-                 "error": f"timeout after {CONFIG_TIMEOUT_S}s"},
+                 "error": f"timeout after {timeout_s}s"},
             )
             return
 
@@ -336,10 +378,17 @@ async def run_sweep(
     cpu_mem = workload.get("cpu_mem", CPU_MEM_DEFAULT)
     link_bw = int(workload.get("link_bw", LINK_BW_DEFAULT))
     link_latency = int(workload.get("link_latency", LINK_LATENCY_DEFAULT))
+    # Power modeling: when the scenario was loaded from a cluster config that
+    # had a `power` block, the JS captures it and forwards it here. Applied
+    # uniformly to every generated node so each variant runs power simulation.
+    power_template = workload.get("power_template") or None
 
     config_paths: dict[str, Path] = {}
     for spec in configs:
-        cluster_json = build_cluster_json(spec, cpu_mem, link_bw, link_latency)
+        cluster_json = build_cluster_json(
+            spec, cpu_mem, link_bw, link_latency,
+            power_template=power_template,
+        )
         cfg_path = sweep_dir / "configs" / f"{spec.label}.json"
         cfg_path.write_text(json.dumps(cluster_json, indent=4))
         config_paths[spec.label] = cfg_path

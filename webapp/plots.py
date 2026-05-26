@@ -43,10 +43,11 @@ def assign_config_colors(labels: list[str]) -> dict[str, str]:
 
 # Metrics that appear as bar charts, with display titles + y-axis units.
 _BAR_METRICS = {
-    "total_token_tp": ("Total token throughput", "tok/s"),
-    "mean_ttft_ms":   ("Mean TTFT",              "ms"),
-    "mean_tpot_ms":   ("Mean TPOT",              "ms"),
-    "mean_itl_ms":    ("Mean ITL",               "ms"),
+    "total_token_tp":  ("Total token throughput", "tok/s"),
+    "mean_ttft_ms":    ("Mean TTFT",              "ms"),
+    "mean_tpot_ms":    ("Mean TPOT",              "ms"),
+    "mean_itl_ms":     ("Mean ITL",               "ms"),
+    "total_energy_wh": ("Total energy",           "Wh"),
 }
 
 
@@ -123,6 +124,10 @@ def bar_charts(results: list[dict]) -> dict[str, str]:
             title=f"{title} ({unit})",
             xaxis_title="Configuration",
             yaxis_title=f"{title} ({unit})",
+            # Long heterogeneous labels (e.g. het_p1x1_A6000__c1x1_RNGD)
+            # squash the plot when rendered on the x-axis. Hide tick labels
+            # and rely on the shared Config Legend card for color → label.
+            xaxis=dict(showticklabels=False),
         )
         out[metric] = fig.to_json()
     return out
@@ -173,15 +178,16 @@ def pareto_scatter(results: list[dict], x_metric: str = "mean_ttft_ms") -> str:
 
     fig = go.Figure()
     color_map = assign_config_colors(labels)
-    # One trace per config so each marker has a distinct color in legend
-    # and tooltip — same color used in bar/CDF charts for visual continuity.
+    # One trace per config — color identifies the config (matched in the
+    # shared Config Legend card). Drop the in-plot text labels and hide
+    # per-config legend entries; hover still reveals the name.
     for i, lbl in enumerate(labels):
         fig.add_trace(go.Scatter(
             x=[pts[i][0]], y=[pts[i][1]],
-            mode="markers+text", text=[lbl],
-            textposition="top center",
+            mode="markers",
             marker=dict(size=10, color=color_map[lbl]),
             name=lbl,
+            showlegend=False,
         ))
 
     keep = _pareto_frontier(pts)
@@ -261,9 +267,12 @@ def axis_line_charts(results: list[dict]) -> dict[str, str]:
             xs = [int(r.get(ax, 1) or 1) for r in line_pts]
             ys = [float(r.get("total_token_tp")) for r in line_pts]
             ls = [r.get("label", "") for r in line_pts]
+            # Drop in-plot text labels — config names live in the shared
+            # legend. Hover still shows them via customdata.
             fig.add_trace(go.Scatter(
-                x=xs, y=ys, mode="lines+markers+text", text=ls,
-                textposition="top center",
+                x=xs, y=ys, mode="lines+markers",
+                customdata=ls,
+                hovertemplate="%{customdata}<br>%{xaxis.title.text}=%{x}<br>tok/s=%{y:.2f}<extra></extra>",
                 marker_color=FAMILY_COLORS.get(ax, "#888"),
                 name=f"{ax} sweep ({', '.join(f'{a}={anchor[a]}' for a in others)})",
             ))
@@ -308,6 +317,7 @@ def cdf_charts(results: list[dict]) -> dict[str, str]:
                 x=xs, y=ys, mode="lines",
                 name=lbl,
                 line=dict(color=color_map[lbl]),
+                showlegend=False,  # use shared Config Legend card
             ))
 
         if not traces:

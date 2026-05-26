@@ -5,6 +5,7 @@ expects (see config_builder.py:38-122).
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -50,11 +51,16 @@ def build_cluster_json(
     num_nodes: int = 1,
     cpu_mem_per_node: "list[dict] | None" = None,
     instances_per_node: "list[list[InstanceSpec]] | None" = None,
+    power_template: "dict | None" = None,
 ) -> dict:
     """Produce a cluster JSON dict accepted by config_builder.py.
 
     Backwards compatible: omitting the new kwargs gives the original single-node behaviour.
     When instances_per_node is provided, each list element becomes one node.
+    When power_template is provided (a node-level "power" dict from a loaded
+    cluster config), it is attached to every generated node so the simulator
+    enables power modeling. Each node gets its own deep copy because
+    config_builder.py mutates power["npu"][hw]["num_npus"] in place.
     """
     if instances_per_node is None:
         nodes_instances: list[list[InstanceSpec]] = [spec.instances]
@@ -80,7 +86,7 @@ def build_cluster_json(
             for inst in inst_list
         ]
         cm = cpu_mem_per_node[node_idx]
-        nodes_json.append({
+        node_json: dict = {
             "num_instances": len(instances_json),
             "cpu_mem": {
                 "mem_size":    cm["mem_size"],
@@ -88,7 +94,10 @@ def build_cluster_json(
                 "mem_latency": cm["mem_latency"],
             },
             "instances": instances_json,
-        })
+        }
+        if power_template:
+            node_json["power"] = copy.deepcopy(power_template)
+        nodes_json.append(node_json)
 
     return {
         "num_nodes":    num_nodes,

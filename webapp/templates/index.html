@@ -95,6 +95,12 @@
     <div class="actions">
         <button id="btn-enumerate" class="btn-primary" type="button">Enumerate Configs</button>
         <button id="btn-run" class="btn-primary" type="button" disabled>Run Sweep</button>
+        <label class="inline-label" style="margin-left: auto">
+            Timeout (s)
+            <input id="timeout-s" type="number" min="10" step="10" value="120"
+                   style="max-width: 90px"
+                   title="Per-config timeout. Simulations exceeding this are killed and marked failed.">
+        </label>
     </div>
     <div id="enum-summary" class="hint"></div>
 </section>

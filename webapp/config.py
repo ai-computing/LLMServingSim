@@ -24,7 +24,7 @@ SIM_ENV = {
 }
 
 MAX_CONCURRENT = min(10, max(1, (os.cpu_count() or 4) // 2))
-CONFIG_TIMEOUT_S = 600  # kill a config run after 10 min
+CONFIG_TIMEOUT_S = 120  # kill a config run after 1 min
 SOFT_CAP = 20           # warn user if sweep exceeds this count
 
 # Default hardware memory specs -- used when building cluster JSONs

@@ -134,8 +134,49 @@ thead th {
 tbody tr:hover { background: var(--bg); }
 
 .matrix-table td:nth-child(n+6) { font-family: var(--font-mono); text-align: right; }
+/* Config column (first cell): truncate long heterogeneous labels with
+ * ellipsis so the table never pushes past the card boundary. The full
+ * label is preserved via the `title` attribute set in results.html. */
+.matrix-table td:first-child {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    max-width: 28ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .run-table td:nth-child(3) { font-family: var(--font-mono); }
 .cfg-log { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); max-width: 600px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* === Config Legend (shared across all charts on results page) ===
+ * Swatch + monospace label grid. Items wrap horizontally so 30+ configs
+ * fit gracefully. Each item has a title="" tooltip with the full label. */
+.config-legend {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: var(--space-sm) var(--space-md);
+    margin-top: var(--space-md);
+}
+.config-legend-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    min-width: 0;  /* lets ellipsis kick in for the inner label */
+}
+.config-legend-swatch {
+    flex: 0 0 14px;
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(0,0,0,0.15);
+}
+.config-legend-label {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 
 /* === Forms === */
 

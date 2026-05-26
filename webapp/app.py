@@ -57,7 +57,7 @@ from .hardware_catalog import (
     list_models_for_hardware,
 )
 from .parser import parse_run
-from .plots import all_plots, pareto_scatter
+from .plots import all_plots, assign_config_colors, pareto_scatter
 
 # ---------------------------------------------------------------------------
 # App + Jinja + static
@@ -300,9 +300,25 @@ async def page_results(sweep_id: str, request: Request) -> HTMLResponse:
             "ttft": r.get("mean_ttft_ms"),
             "tpot": r.get("mean_tpot_ms"),
             "itl": r.get("p99_itl_ms"),
+            "energy_wh": r.get("total_energy_wh"),
+            "energy_breakdown": {
+                "Base Node": r.get("base_node_energy_wh"),
+                "NPU":       r.get("npu_energy_wh"),
+                "CPU":       r.get("cpu_energy_wh"),
+                "Memory":    r.get("dram_energy_wh"),
+                "Link":      r.get("link_energy_wh"),
+                "NIC":       r.get("nic_energy_wh"),
+                "Storage":   r.get("storage_energy_wh"),
+            },
         }
         for r in results
     ]
+    has_energy = any(r.get("energy_wh") is not None for r in config_rows)
+
+    # Shared color mapping for the Config Legend card. The labels-order MUST
+    # match what plots.py uses internally so the legend swatches line up with
+    # the per-config colors in every chart.
+    config_colors = assign_config_colors([r["label"] for r in results])
 
     return render(
         "results.html",
@@ -312,6 +328,8 @@ async def page_results(sweep_id: str, request: Request) -> HTMLResponse:
         config_rows=config_rows,
         plots_json=plots_json,
         has_metrics=metrics_path.exists(),
+        has_energy=has_energy,
+        config_colors=config_colors,
     )
 
 

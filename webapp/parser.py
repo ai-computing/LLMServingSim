@@ -37,6 +37,26 @@ _INT_KEYS = {"total_requests"}
 _NPU_UTIL_RE = re.compile(r"NPU Memory Usage [\d.]+ MB \(([\d.]+) % Used\)")
 _SUCCESS_MARKER = "Simulation results"
 
+# Power-model output (only present when the cluster config has a `power` block;
+# see inference_serving/power_model.py:print_power_summary).
+# The "Total energy consumption (kJ):" line is the system-wide total — match
+# at start-of-line via MULTILINE so we don't confuse it with "Node N total
+# energy consumption (kJ):".
+_TOTAL_ENERGY_RE = re.compile(r"^Total energy consumption \(kJ\):\s+([\d.]+)", re.MULTILINE)
+# Per-device totals printed as a tree, e.g. "├─ NPU energy consumption (J):  321.45".
+_DEVICE_ENERGY_RE = re.compile(r"[├└]─\s+(Base Node|NPU|CPU|Memory|Link|NIC|Storage)\s+energy consumption \(J\):\s+([\d.]+)")
+# Log label -> metric key (Wh, converted in parse_log). "Memory" is the
+# printed label for the dram device.
+_DEVICE_KEY_MAP = {
+    "Base Node": "base_node_energy_wh",
+    "NPU":       "npu_energy_wh",
+    "CPU":       "cpu_energy_wh",
+    "Memory":    "dram_energy_wh",
+    "Link":      "link_energy_wh",
+    "NIC":       "nic_energy_wh",
+    "Storage":   "storage_energy_wh",
+}
+
 
 def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
@@ -73,6 +93,29 @@ def parse_log(log_path: Path) -> dict:
             metrics["npu_util_pct"] = float(npu_utils[-1])
         except ValueError:
             pass
+
+    # Power model totals — silently absent when the run had no `power` block.
+    # Convert kJ→Wh (×1000/3600) so all downstream display uses watt-hours.
+    m = _TOTAL_ENERGY_RE.search(text)
+    if m:
+        try:
+            kj = float(m.group(1))
+            metrics["total_energy_wh"] = kj * 1000.0 / 3600.0
+        except ValueError:
+            pass
+
+    # Per-device energy sums (J) across all nodes, converted to Wh.
+    device_j_sums: dict[str, float] = {}
+    for label, val_str in _DEVICE_ENERGY_RE.findall(text):
+        key = _DEVICE_KEY_MAP.get(label)
+        if not key:
+            continue
+        try:
+            device_j_sums[key] = device_j_sums.get(key, 0.0) + float(val_str)
+        except ValueError:
+            pass
+    for key, j_total in device_j_sums.items():
+        metrics[key] = j_total / 3600.0  # J → Wh
 
     return metrics
 
