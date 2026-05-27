@@ -181,11 +181,16 @@
         // Add to live plots if metrics complete. Both charts share the same
         // candidate set; the axis mapping differs per chart.
         if (ev.state === 'done' && m.p99_ttft_ms != null && m.total_token_tp != null) {
+            const tokPerWh2 = m.tok_per_wh != null ? m.tok_per_wh
+                : (m.total_token_tp != null && m.total_latency_s != null && m.total_energy_wh > 0
+                    ? m.total_token_tp * m.total_latency_s / m.total_energy_wh
+                    : null);
             livePoints[ev.label] = {
                 ttft: m.p99_ttft_ms,
                 tpot: m.tpot_p99_ms != null ? m.tpot_p99_ms : null,
                 throughput: m.total_token_tp,
                 energy: m.total_energy_wh != null ? m.total_energy_wh : null,
+                tokwh: tokPerWh2,
                 label: ev.label,
             };
             redrawPlot();
@@ -233,6 +238,19 @@
             paper_bgcolor: 'rgba(0,0,0,0)',
         }, {responsive: true});
 
+        // Chart 4: Tokens/Wh vs Throughput — same per-candidate color
+        Plotly.newPlot('dse-tokwh-plot', [{
+            x: [], y: [], mode: 'markers',
+            marker: {size: 10, color: []},
+            text: [],
+            type: 'scatter',
+        }], {
+            xaxis: {title: 'Tokens/Wh'},
+            yaxis: {title: 'Throughput (tok/s)'},
+            margin: {l: 60, r: 30, t: 20, b: 50},
+            paper_bgcolor: 'rgba(0,0,0,0)',
+        }, {responsive: true});
+
         // Bind identical click/hover handlers to all charts so a click in
         // any one highlights the same row.
         const wirePlot = (id) => {
@@ -252,6 +270,7 @@
         wirePlot('dse-live-plot');
         wirePlot('dse-energy-plot');
         wirePlot('dse-tpot-plot');
+        wirePlot('dse-tokwh-plot');
     }
 
     // Module state for click selection (so we can toggle the same dot off)
@@ -345,6 +364,23 @@
             type: 'scatter',
         }], {
             xaxis: {title: 'TPOT p99 (ms)'},
+            yaxis: {title: 'Throughput (tok/s)'},
+            margin: {l: 60, r: 30, t: 20, b: 50},
+            paper_bgcolor: 'rgba(0,0,0,0)',
+        }, {responsive: true});
+
+        // Chart 4: Tokens/Wh vs Throughput — skip points missing tokwh.
+        const tokwhPoints = arr.filter(p => p.tokwh != null);
+        Plotly.react('dse-tokwh-plot', [{
+            x: tokwhPoints.map(p => p.tokwh),
+            y: tokwhPoints.map(p => p.throughput),
+            mode: 'markers',
+            marker: markerStyle(tokwhPoints),
+            text: tokwhPoints.map(p => p.label),
+            hovertemplate: '%{text}<br>Tok/Wh=%{x:.0f}<br>Tok/s=%{y:.2f}<extra></extra>',
+            type: 'scatter',
+        }], {
+            xaxis: {title: 'Tokens/Wh'},
             yaxis: {title: 'Throughput (tok/s)'},
             margin: {l: 60, r: 30, t: 20, b: 50},
             paper_bgcolor: 'rgba(0,0,0,0)',
