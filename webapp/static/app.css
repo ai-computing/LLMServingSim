@@ -81,6 +81,11 @@ code {
     font-weight: 500;
 }
 .nav-links a:hover { color: var(--primary); text-decoration: none; }
+.nav-links a.active {
+    color: var(--primary);
+    border-bottom: 2px solid var(--primary);
+    padding-bottom: 2px;
+}
 
 .container {
     max-width: 1280px;
@@ -133,7 +138,7 @@ thead th {
 
 tbody tr:hover { background: var(--bg); }
 
-.matrix-table td:nth-child(n+6) { font-family: var(--font-mono); text-align: right; }
+.matrix-table td:nth-child(n+4) { font-family: var(--font-mono); text-align: right; padding-right: var(--space-xl); }
 /* Config column (first cell): truncate long heterogeneous labels with
  * ellipsis so the table never pushes past the card boundary. The full
  * label is preserved via the `title` attribute set in results.html. */
@@ -510,4 +515,19 @@ input[type=range] { width: 100%; }
 .best-cell {
     background: #fef08a !important;
     font-weight: 600;
+}
+
+/* Click-to-highlight: persistent selection (toggle by clicking same dot again).
+ * Soft yellow + 3px primary-color left accent. */
+.row-highlighted {
+    background-color: #fff3bf !important;
+    box-shadow: inset 3px 0 0 var(--primary);
+}
+
+/* Hover preview: temporary tint while the cursor sits on a scatter dot.
+ * Lighter than the click style so a row that's BOTH selected and hovered
+ * still reads as "selected" first (click rule wins via DOM order — but the
+ * background here is intentionally subtler to layer cleanly). */
+.row-hover-preview:not(.row-highlighted) {
+    background-color: rgba(255, 243, 191, 0.45) !important;
 }

@@ -75,6 +75,31 @@ _jinja = Environment(
 app = FastAPI(title="LLMServingSim Web UI")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# DSE (Design Space Exploration) routes. Lives under /api/dse/... so it's
+# isolated from sweep routes but shares the same FastAPI process, catalog,
+# and SSE infrastructure (webapp.runner). See webapp/dse/server/routes.py.
+from .dse.server import dse_router  # noqa: E402
+app.include_router(dse_router, prefix="/api/dse")
+
+
+# ---------------------------------------------------------------------------
+# DSE — HTML pages (server-rendered Jinja templates)
+# ---------------------------------------------------------------------------
+
+@app.get("/dse/explore", response_class=HTMLResponse)
+async def dse_explore_page(request: Request) -> HTMLResponse:
+    return render("dse_explore.html", title="DSE — Explore")
+
+
+@app.get("/dse/jobs/{job_id}", response_class=HTMLResponse)
+async def dse_progress_page(job_id: str, request: Request) -> HTMLResponse:
+    return render("dse_progress.html", title=f"DSE — {job_id}", job_id=job_id)
+
+
+@app.get("/dse/jobs/{job_id}/results", response_class=HTMLResponse)
+async def dse_results_page(job_id: str, request: Request) -> HTMLResponse:
+    return render("dse_results.html", title=f"DSE Results — {job_id}", job_id=job_id)
+
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def _favicon() -> Response:
@@ -97,7 +122,20 @@ async def _favicon() -> Response:
     )
 
 
+_NAV_MAP = {
+    "index.html":          "sweep",
+    "sweeps_list.html":    "history",
+    "progress.html":       "history",
+    "results.html":        "history",
+    "dse_explore.html":    "dse",
+    "dse_progress.html":   "dse",
+    "dse_results.html":    "dse",
+    "dse_jobs_list.html":  "dse",
+}
+
+
 def render(template_name: str, **context: Any) -> HTMLResponse:
+    context.setdefault("active_nav", _NAV_MAP.get(template_name, ""))
     tmpl = _jinja.get_template(template_name)
     return HTMLResponse(tmpl.render(**context))
 

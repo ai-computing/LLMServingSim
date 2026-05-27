@@ -4,7 +4,7 @@ import yaml
 import math
 import sys
 import os
-from .utils import get_config
+from .utils import get_config, PID_TAG
 from .pim_model import PIMModel
 from .logger import get_logger
 
@@ -31,9 +31,10 @@ def build_cluster_config(astra_sim, cluster_config_path, enable_local_offloading
         print(f"Failed to parse JSON from '{cluster_config_path}'.")
         exit(1)
 
-    network_config_path = os.path.join(astra_sim, 'inputs/network/network.yml')
-    system_config_path = os.path.join(astra_sim, 'inputs/system/system.json')
-    memory_config_path = os.path.join(astra_sim, 'inputs/memory/memory_expansion.json')
+    network_config_path = os.path.join(astra_sim, f'inputs/network/{PID_TAG}network.yml')
+    system_template_path = os.path.join(astra_sim, 'inputs/system/system.json')  # shared read-only template
+    system_config_path = os.path.join(astra_sim, f'inputs/system/{PID_TAG}system.json')
+    memory_config_path = os.path.join(astra_sim, f'inputs/memory/{PID_TAG}memory_expansion.json')
     memory_config = {}
 
     num_nodes = cluster_config["num_nodes"]
@@ -167,6 +168,14 @@ def build_cluster_config(astra_sim, cluster_config_path, enable_local_offloading
                     power["npu"][hardware]["num_npus"] = 0
                 power["npu"][hardware]["num_npus"] += instance["npu_num"]
 
+        # Zero-fill num_npus for any NPU hardware entry that no instance used.
+        # The power template may contain extra hardware types (e.g. union template
+        # across candidates); those entries must be 0 so PowerModel doesn't fail.
+        if power_modeling:
+            for hw_entry in node_config["power"]["npu"].values():
+                if "num_npus" not in hw_entry:
+                    hw_entry["num_npus"] = 0
+
         # Validate instance configuration
         if len(instances) != num_instances:
             raise ValueError(f"Number of instances ({len(instances)}) does not match 'num_instances' ({num_instances}).")
@@ -270,11 +279,11 @@ def build_cluster_config(astra_sim, cluster_config_path, enable_local_offloading
                 # Use an exclusive file lock to avoid a race condition when
                 # multiple simulations run concurrently and all try to
                 # read-modify-write the same shared system.json.
-                lock_path = system_config_path + ".lock"
+                lock_path = system_template_path + ".lock"
                 with open(lock_path, "w") as _lock_f:
                     fcntl.flock(_lock_f, fcntl.LOCK_EX)
                     try:
-                        with open(system_config_path) as f:
+                        with open(system_template_path) as f:
                             system_config = json.load(f)
                         # sync local-mem-bw with the primary npu_mem (decode
                         # instance in heterogeneous P/D, else first instance)

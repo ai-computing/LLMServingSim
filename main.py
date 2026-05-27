@@ -116,7 +116,7 @@ def main():
     # Automatic network, memory configuration
     # If you want to set more specific information such as latency, look at config.py and each json file
     if network_backend == 'analytical':
-        network=os.path.join(astra_sim, "inputs/network/network.yml")
+        network=os.path.join(astra_sim, f"inputs/network/{PID_TAG}network.yml")
         binary=os.path.join(astra_sim, "build/astra_analytical/build/AnalyticalAstra/bin/AnalyticalAstra")
     elif network_backend == 'ns3':
         network=os.path.join(astra_sim, "extern/network_backend/ns-3/scratch/config/config.txt")
@@ -128,8 +128,8 @@ def main():
         open(os.path.join(output_dir, "trace.txt"), "w").close()
     else:
         raise NotImplementedError("Only analytical and ns3 network backend are supported")
-    memory=os.path.join(astra_sim, 'inputs/memory/memory_expansion.json')
-    system=os.path.join(astra_sim, "inputs/system/system.json")
+    memory=os.path.join(astra_sim, f'inputs/memory/{PID_TAG}memory_expansion.json')
+    system=os.path.join(astra_sim, f"inputs/system/{PID_TAG}system.json")
     # ------------------------------------- Prepare simulation -------------------------------------
     # Need to extract each instance's memory accessability 
     node2inst_mapping = defaultdict(list)

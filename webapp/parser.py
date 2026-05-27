@@ -117,6 +117,14 @@ def parse_log(log_path: Path) -> dict:
     for key, j_total in device_j_sums.items():
         metrics[key] = j_total / 3600.0  # J → Wh
 
+    # Derived: tokens per watt-hour — energy efficiency index.
+    # = (tok/s) × simulation_time_s / energy_Wh
+    tp = metrics.get("total_token_tp")
+    lat = metrics.get("total_latency_s")
+    ewh = metrics.get("total_energy_wh")
+    if tp is not None and lat is not None and ewh and ewh > 0:
+        metrics["tok_per_wh"] = tp * lat / ewh
+
     return metrics
 
 

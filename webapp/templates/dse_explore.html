@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="page-header">
+    <h1>Design Space Exploration</h1>
+    <p class="sub">Define a resource pool + constraints, and we'll enumerate and simulate every viable cluster combination, then rank by your objectives.</p>
+</header>
+
+<section class="card">
+    <h2>1. Resource Pool</h2>
+    <p class="hint">Hardware types and their allowed quantity ranges. Add rows for each hardware in your pool.</p>
+    <table id="resource-pool" class="matrix-table">
+        <thead><tr><th>Hardware</th><th>min</th><th>max</th><th></th></tr></thead>
+        <tbody id="resource-pool-body"></tbody>
+    </table>
+    <button id="btn-add-hw" class="btn-secondary" type="button">+ Add hardware</button>
+    <div class="cc-row" style="margin-top: var(--space-md)">
+        <label style="max-width: 200px">Total max NPUs (optional)
+            <input id="total-max" type="number" min="1" placeholder="(no cap)">
+        </label>
+    </div>
+</section>
+
+<section class="card">
+    <h2>2. Model & Workload</h2>
+    <div class="cc-row">
+        <label>Model
+            <select id="model-select"></select>
+        </label>
+        <label style="max-width: 120px">FP precision
+            <select id="fp-select">
+                <option value="16" selected>16-bit</option>
+                <option value="8">8-bit</option>
+                <option value="32">32-bit</option>
+            </select>
+        </label>
+    </div>
+    <div class="cc-row">
+        <label>Dataset
+            <select id="dataset-select"></select>
+        </label>
+        <label style="max-width: 160px">Num requests
+            <input id="num-req" type="number" min="1" value="100">
+        </label>
+        <label style="max-width: 160px">Timeout (s)
+            <input id="timeout-s" type="number" min="10" step="10" value="120">
+        </label>
+    </div>
+</section>
+
+<section class="card">
+    <h2>3. Constraints (SLO)</h2>
+    <p class="hint">Empty = no constraint on that dimension. Candidates violating any constraint are excluded from Top-N (but still simulated).</p>
+    <div class="cc-row">
+        <label style="max-width: 200px">TTFT p99 (ms) ≤
+            <input id="cons-ttft" type="number" min="0" placeholder="—">
+        </label>
+        <label style="max-width: 200px">TPOT p99 (ms) ≤
+            <input id="cons-tpot" type="number" min="0" placeholder="—">
+        </label>
+        <label style="max-width: 200px">ITL p99 (ms) ≤
+            <input id="cons-itl" type="number" min="0" placeholder="—">
+        </label>
+    </div>
+    <div class="cc-row">
+        <label style="max-width: 240px">Throughput (tok/s) ≥
+            <input id="cons-tp" type="number" min="0" placeholder="—">
+        </label>
+        <label style="max-width: 240px">Energy (Wh) ≤
+            <input id="cons-energy" type="number" min="0" placeholder="—">
+        </label>
+    </div>
+</section>
+
+<section class="card">
+    <h2>4. Search & Objective Weights</h2>
+    <div class="cc-row">
+        <label style="max-width: 180px">Max combinations
+            <input id="search-max" type="number" min="1" value="20">
+        </label>
+        <label style="max-width: 180px">Sampling
+            <select id="search-sampling">
+                <option value="random" selected>random</option>
+                <option value="grid">grid</option>
+            </select>
+        </label>
+        <label style="max-width: 140px">Seed
+            <input id="search-seed" type="number" value="42">
+        </label>
+        <label style="max-width: 100px">Top-N
+            <input id="top-n" type="number" min="1" value="5">
+        </label>
+    </div>
+    <div class="cc-row" style="gap: var(--space-md); flex-wrap: wrap">
+        <label><input type="checkbox" id="feat-pd" checked> P/D disaggregation</label>
+        <label><input type="checkbox" id="feat-prefix"> Prefix caching</label>
+        <label><input type="checkbox" id="feat-attn-off"> Attention offload (PIM)</label>
+    </div>
+    <div class="cc-row" style="margin-top: var(--space-md); display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-md)">
+        <label>TTFT weight <input id="w-ttft" type="range" min="0" max="100" value="25"> <span id="w-ttft-v">25</span></label>
+        <label>TPOT weight <input id="w-tpot" type="range" min="0" max="100" value="25"> <span id="w-tpot-v">25</span></label>
+        <label>Throughput <input id="w-tp" type="range" min="0" max="100" value="25"> <span id="w-tp-v">25</span></label>
+        <label>Power <input id="w-power" type="range" min="0" max="100" value="25"> <span id="w-power-v">25</span></label>
+    </div>
+</section>
+
+<section class="card">
+    <div class="actions">
+        <button id="btn-dry-run" class="btn-secondary" type="button">Estimate count</button>
+        <button id="btn-start" class="btn-primary" type="button">Start Exploration</button>
+        <span id="dse-status" class="hint"></span>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/dse_explore.js"></script>
+{% endblock %}

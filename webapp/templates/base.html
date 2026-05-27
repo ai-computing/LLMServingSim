@@ -12,8 +12,9 @@
         <div class="nav-inner">
             <a class="nav-logo" href="/">LLMServingSim</a>
             <div class="nav-links">
-                <a href="/">New Sweep</a>
-                <a href="/sweeps">History</a>
+                <a href="/" class="{% if active_nav == 'sweep' %}active{% endif %}">New Sweep</a>
+                <a href="/dse/explore" class="{% if active_nav == 'dse' %}active{% endif %}">DSE</a>
+                <a href="/sweeps" class="{% if active_nav == 'history' %}active{% endif %}">History</a>
             </div>
         </div>
     </nav>
