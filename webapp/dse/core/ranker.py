@@ -27,6 +27,7 @@ _OBJECTIVES = {
     "tpot":       ("p99_tpot_ms",     "min"),
     "throughput": ("total_token_tp",  "max"),
     "power":      ("total_energy_wh", "min"),   # proxy for "power" objective
+    "tokwh":      ("tok_per_wh",      "max"),   # energy efficiency
 }
 
 
@@ -49,6 +50,8 @@ def filter_slo(results: list[SimulationResult], cons: Constraints) -> None:
         if ok and cons.power_max_w is not None and m.get("avg_power_w") is not None and m["avg_power_w"] > cons.power_max_w:
             ok = False
         if ok and cons.energy_max_wh is not None and (m.get("total_energy_wh") is None or m["total_energy_wh"] > cons.energy_max_wh):
+            ok = False
+        if ok and cons.tokwh_min is not None and (m.get("tok_per_wh") is None or m["tok_per_wh"] < cons.tokwh_min):
             ok = False
         r.meets_slo = ok
 
@@ -163,6 +166,7 @@ def compute_scores(results: list[SimulationResult],
         "tpot":       weights.tpot,
         "throughput": weights.throughput,
         "power":      weights.power,
+        "tokwh":      weights.tokwh,
     }
 
     # Reset scores

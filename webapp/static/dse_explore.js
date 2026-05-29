@@ -13,7 +13,7 @@
         document.getElementById('btn-add-hw').addEventListener('click', addHwRow);
         document.getElementById('btn-dry-run').addEventListener('click', dryRun);
         document.getElementById('btn-start').addEventListener('click', startJob);
-        wireWeightSliders();
+        wirePriorityRows();
     });
 
     async function loadCatalog() {
@@ -92,22 +92,25 @@
         });
         const totalMax = parseInt(document.getElementById('total-max').value, 10);
         const constraints = {};
-        const consVal = (id) => {
-            const v = document.getElementById(id).value;
-            return v === '' ? null : Number(v);
-        };
-        constraints.ttft_p99_ms = consVal('cons-ttft');
-        constraints.tpot_p99_ms = consVal('cons-tpot');
-        constraints.itl_p99_ms = consVal('cons-itl');
-        constraints.throughput_min_tok_s = consVal('cons-tp');
-        constraints.energy_max_wh = consVal('cons-energy');
 
-        const weights = {
-            ttft: parseFloat(document.getElementById('w-ttft').value),
-            tpot: parseFloat(document.getElementById('w-tpot').value),
-            throughput: parseFloat(document.getElementById('w-tp').value),
-            power: parseFloat(document.getElementById('w-power').value),
+        // Derive weights from objective checkboxes + Low/Med/High priority.
+        // Unchecked objectives get weight 0 (excluded from scoring).
+        // Priority values: Low=1, Medium=3, High=9.
+        const priVal = (name) => {
+            const sel = document.querySelector(`input[name="${name}"]:checked`);
+            return sel ? Number(sel.value) : 3;
         };
+        const weights = {
+            ttft:       document.getElementById('obj-ttft').checked  ? priVal('pri-ttft')  : 0,
+            tpot:       document.getElementById('obj-tpot').checked  ? priVal('pri-tpot')  : 0,
+            throughput: document.getElementById('obj-tp').checked    ? priVal('pri-tp')    : 0,
+            power:      document.getElementById('obj-power').checked ? priVal('pri-power') : 0,
+            tokwh:      document.getElementById('obj-tokwh').checked ? priVal('pri-tokwh') : 0,
+        };
+        // Ensure at least one weight > 0 (fall back to equal if nothing checked)
+        if (Object.values(weights).every(v => v === 0)) {
+            weights.ttft = weights.tpot = weights.throughput = weights.power = weights.tokwh = 1;
+        }
 
         return {
             resource_pool: {
@@ -149,15 +152,51 @@
                 body: JSON.stringify(spec),
             });
             const j = await r.json();
-            if (!r.ok) { status.textContent = '❌ ' + (j.detail || 'error'); return; }
+            if (!r.ok) {
+                status.textContent = '❌ ' + (j.detail || 'error');
+                document.getElementById('dry-run-results').style.display = 'none';
+                return;
+            }
             const unique = j.estimated_candidates;
             const sim = j.simulated_candidates ?? Math.min(unique, spec.search.max_combinations);
             status.textContent = sim < unique
                 ? `≈ ${unique} candidates found → ${sim} will be simulated (sampled, cap=${spec.search.max_combinations})`
                 : `≈ ${sim} candidates will be simulated (all found)`;
+            renderDryRunList(j.candidates || [], unique, sim);
         } catch (e) {
             status.textContent = '❌ ' + e.message;
+            document.getElementById('dry-run-results').style.display = 'none';
         }
+    }
+
+    function renderDryRunList(candidates, unique, sim) {
+        const section = document.getElementById('dry-run-results');
+        const label = document.getElementById('dry-run-count-label');
+        const tbody = document.getElementById('dry-run-list-body');
+
+        label.textContent = `(${unique} total, ${sim} to simulate)`;
+        tbody.innerHTML = '';
+
+        for (const c of candidates) {
+            const hw = Object.entries(c.hw_distribution || {})
+                .filter(([, n]) => n > 0)
+                .map(([hw, n]) => `${n}×${hw}`)
+                .join(' + ') || '—';
+            const par = c.parallelism || {};
+            const willSim = c.will_simulate;
+            const tr = document.createElement('tr');
+            if (!willSim) tr.style.opacity = '0.45';
+            tr.innerHTML = `
+                <td>${c.label}</td>
+                <td>${hw}</td>
+                <td>${par.tp ?? '—'}</td>
+                <td>${par.pp ?? '—'}</td>
+                <td>${par.dp ?? '—'}</td>
+                <td>${c.pd_layout || '—'}</td>
+                <td>${willSim ? '✓' : '—'}</td>`;
+            tbody.appendChild(tr);
+        }
+        section.style.display = candidates.length ? '' : 'none';
     }
 
     async function startJob() {
@@ -184,12 +223,17 @@
         }
     }
 
-    function wireWeightSliders() {
-        const ids = ['ttft', 'tpot', 'tp', 'power'];
-        for (const id of ids) {
-            const s = document.getElementById('w-' + id);
-            const v = document.getElementById('w-' + id + '-v');
-            s.addEventListener('input', () => v.textContent = s.value);
-        }
+    function wirePriorityRows() {
+        document.querySelectorAll('.obj-row').forEach(row => {
+            const cb = row.querySelector('input[type="checkbox"]');
+            const priSpan = row.querySelector('.obj-pri');
+            if (!cb || !priSpan) return;
+            const update = () => {
+                priSpan.style.opacity = cb.checked ? '1' : '0.3';
+                priSpan.querySelectorAll('input').forEach(i => i.disabled = !cb.checked);
+            };
+            cb.addEventListener('change', update);
+            update();
+        });
     }
 })();

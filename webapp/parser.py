@@ -125,6 +125,11 @@ def parse_log(log_path: Path) -> dict:
     if tp is not None and lat is not None and ewh and ewh > 0:
         metrics["tok_per_wh"] = tp * lat / ewh
 
+    # Derived: average power = total_energy_wh × 3600 / total_latency_s
+    # Used by ranker.py's power_max_w SLO check.
+    if ewh and lat and lat > 0:
+        metrics["avg_power_w"] = ewh * 3600.0 / lat
+
     return metrics
 
 
@@ -205,9 +210,24 @@ def parse_csv(csv_path: Path) -> dict:
 
 
 def parse_run(log_path: Path, csv_path: Path) -> dict:
-    """Combine log + CSV parsing into one metrics dict."""
+    """Combine log + CSV parsing into one metrics dict.
+
+    Log uses p99_*_ms naming; CSV uses *_p99_ms naming.  Both forms are
+    aliased here so downstream code (ranker, UI) works regardless of which
+    source populated the value.
+    """
     m = parse_log(log_path)
     m.update(parse_csv(csv_path))
+    # Alias: prefer the already-present key, fill the missing form.
+    for log_k, csv_k in [
+        ("p99_ttft_ms", "ttft_p99_ms"),
+        ("p99_tpot_ms", "tpot_p99_ms"),
+        ("p99_itl_ms",  "itl_p99_ms"),
+    ]:
+        if log_k in m and csv_k not in m:
+            m[csv_k] = m[log_k]
+        elif csv_k in m and log_k not in m:
+            m[log_k] = m[csv_k]
     return m
 
 

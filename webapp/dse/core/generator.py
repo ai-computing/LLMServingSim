@@ -26,6 +26,7 @@ from webapp.cluster_builder import ConfigSpec
 from webapp.enumerate import enumerate_configs
 
 from .schemas import CandidateConfig, JobSpec
+from .stage1_filters import apply_stage1_filters, check_candidate
 
 
 # Path to the metadata catalog (docs/dse/03_catalog.yaml)
@@ -47,17 +48,17 @@ def _aggregate_npu_mem_gb(hw_counts: dict[str, int], hw_meta: dict[str, Any]) ->
     )
 
 
-def _meets_memory(hw_counts: dict[str, int], model_meta: dict[str, Any],
-                  hw_meta: dict[str, Any], fp: int) -> bool:
-    """Aggregate NPU memory must hold the model weights.
+def _coarse_memory_prune(hw_counts: dict[str, int], model_meta: dict[str, Any],
+                         hw_meta: dict[str, Any], fp: int) -> bool:
+    """Coarse aggregate memory pre-filter: skip if total NPU HBM < model weight.
 
-    Approximation: ignores activations + KV cache. Doesn't enforce per-NPU
-    shard fit (that's the role of enumerate_configs' tp_options).
+    This is a fast early-out before enumerate_configs (which is slower).
+    It does NOT enforce per-NPU shard fit — that stricter check runs in
+    stage1_filters.filter_memory after parallelism is known.
     """
     weight_key = f"weight_size_fp{fp}_gb"
     weight_gb = model_meta.get(weight_key)
     if weight_gb is None:
-        # Fallback: estimate from params_b
         weight_gb = model_meta.get("params_b", 0) * (fp / 8)
     return _aggregate_npu_mem_gb(hw_counts, hw_meta) >= weight_gb
 
@@ -151,7 +152,7 @@ def generate_candidates(
 
     for hw_counts in _enumerate_hw_counts(spec):
         # Skip if pre-filters reject
-        if not _meets_memory(hw_counts, model_meta, hw_meta, spec.model.fp):
+        if not _coarse_memory_prune(hw_counts, model_meta, hw_meta, spec.model.fp):
             continue
 
         # Build scenario for enumerate_configs
@@ -192,11 +193,17 @@ def generate_candidates(
             deduped.append(c)
     all_candidates = deduped
 
+    # Stage 1: analytical pre-filter — prune before sampling so the budget is
+    # spent on physically feasible candidates only.
+    all_candidates, _s1_rejections = apply_stage1_filters(all_candidates, spec, metadata)
+
     # Remove already-tried labels (retry rounds)
     if exclude_labels:
         all_candidates = [c for c in all_candidates if c.label not in exclude_labels]
 
-    # Sample if we exceeded the cap
+    # Sample if we exceeded the cap.
+    # dry_run_detail() uses the same _sample() call with the same seed, so the
+    # preview shown to the user (will_simulate=True) matches what actually runs.
     cap = override_max if override_max is not None else spec.search.max_combinations
     if len(all_candidates) > cap:
         all_candidates = _sample(
@@ -225,35 +232,45 @@ def _sample(
         return rng.sample(candidates, k)
 
 
-def dry_run_count(spec: JobSpec, catalog: dict) -> tuple[int, int]:
-    """Count candidates that will actually be simulated.
+def dry_run_detail(
+    spec: JobSpec,
+    catalog: dict,
+) -> tuple[int, int, list[dict]]:
+    """Estimate candidate counts and return per-candidate slim metadata.
 
-    Returns (unique_count, simulated_count) where:
-      unique_count    = distinct labels after dedup (same logic as generate_candidates)
-      simulated_count = min(unique_count, max_combinations) — what the job will actually run
+    Generates all Stage-1-filtered candidates (no sampling cap), then marks
+    which ones would actually be selected for simulation.
+
+    Returns:
+        (unique_count, simulated_count, candidate_details)
+        candidate_details: list sorted by label, each entry:
+          {label, hw_distribution, parallelism, pd_layout, will_simulate}
     """
     metadata = load_metadata()
-    hw_meta = metadata["hardware"]
-    model_meta = metadata["models"].get(spec.model.name, {})
-
-    seen_labels: set[str] = set()
-    for hw_counts in _enumerate_hw_counts(spec):
-        if not _meets_memory(hw_counts, model_meta, hw_meta, spec.model.fp):
-            continue
-        scenario = {
-            "instance_groups": _hw_counts_to_instance_groups(
-                hw_counts, spec.model.name, spec.features.allow_pd_disagg,
-            ),
-            "axes": {
-                "vary_tp": True, "vary_pp": True, "vary_dp": True,
-                "include_pd": spec.features.allow_pd_disagg,
-            },
-        }
-        try:
-            for cs in enumerate_configs(scenario, catalog):
-                seen_labels.add(cs.label)
-        except Exception:
-            continue
-    unique_count = len(seen_labels)
+    # Generate ALL stage-1-filtered candidates by using a very large cap.
+    all_cands = generate_candidates(spec, catalog, metadata, override_max=10_000)
+    unique_count = len(all_cands)
     simulated_count = min(unique_count, spec.search.max_combinations)
-    return unique_count, simulated_count
+
+    # Determine which labels will survive sampling (same seed → deterministic).
+    if unique_count <= spec.search.max_combinations:
+        simulated_labels: set[str] = {c.label for c in all_cands}
+    else:
+        sampled = _sample(
+            all_cands, spec.search.max_combinations,
+            strategy=spec.search.sampling_strategy,
+            seed=spec.search.random_seed,
+        )
+        simulated_labels = {c.label for c in sampled}
+
+    details = [
+        {
+            "label": c.label,
+            "hw_distribution": c.hw_distribution,
+            "parallelism": c.parallelism,
+            "pd_layout": c.pd_layout,
+            "will_simulate": c.label in simulated_labels,
+        }
+        for c in all_cands
+    ]
+    return unique_count, simulated_count, details

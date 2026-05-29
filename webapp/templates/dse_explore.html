@@ -48,26 +48,75 @@
 </section>
 
 <section class="card">
-    <h2>3. Constraints (SLO)</h2>
-    <p class="hint">Empty = no constraint on that dimension. Candidates violating any constraint are excluded from Top-N (but still simulated).</p>
-    <div class="cc-row">
-        <label style="max-width: 200px">TTFT p99 (ms) ≤
-            <input id="cons-ttft" type="number" min="0" placeholder="—">
-        </label>
-        <label style="max-width: 200px">TPOT p99 (ms) ≤
-            <input id="cons-tpot" type="number" min="0" placeholder="—">
-        </label>
-        <label style="max-width: 200px">ITL p99 (ms) ≤
-            <input id="cons-itl" type="number" min="0" placeholder="—">
-        </label>
-    </div>
-    <div class="cc-row">
-        <label style="max-width: 240px">Throughput (tok/s) ≥
-            <input id="cons-tp" type="number" min="0" placeholder="—">
-        </label>
-        <label style="max-width: 240px">Energy (Wh) ≤
-            <input id="cons-energy" type="number" min="0" placeholder="—">
-        </label>
+    <h2>3. Performance Objectives</h2>
+    <p class="hint">최적화할 메트릭을 선택하고 우선순위를 지정하세요. 체크한 항목만 후보 선별·랭킹에 반영됩니다.</p>
+    <div style="display:flex;flex-direction:column;gap:6px;margin-top:10px">
+
+        <div class="obj-row" style="display:flex;align-items:center;gap:12px;padding:7px 10px;border-radius:4px">
+            <input type="checkbox" id="obj-ttft">
+            <label for="obj-ttft" style="flex:1;cursor:pointer;user-select:none">
+                <strong>TTFT p99</strong>
+                <span class="hint" style="margin-left:6px">첫 토큰 응답 시간 (↓ 낮을수록 좋음)</span>
+            </label>
+            <span class="obj-pri" style="display:flex;gap:14px">
+                <label style="cursor:pointer"><input type="radio" name="pri-ttft" value="1"> Low</label>
+                <label style="cursor:pointer"><input type="radio" name="pri-ttft" value="3" checked> Medium</label>
+                <label style="cursor:pointer"><input type="radio" name="pri-ttft" value="9"> High</label>
+            </span>
+        </div>
+
+        <div class="obj-row" style="display:flex;align-items:center;gap:12px;padding:7px 10px;border-radius:4px">
+            <input type="checkbox" id="obj-tpot">
+            <label for="obj-tpot" style="flex:1;cursor:pointer;user-select:none">
+                <strong>TPOT p99</strong>
+                <span class="hint" style="margin-left:6px">토큰 생성 지연 (↓ 낮을수록 좋음)</span>
+            </label>
+            <span class="obj-pri" style="display:flex;gap:14px">
+                <label style="cursor:pointer"><input type="radio" name="pri-tpot" value="1"> Low</label>
+                <label style="cursor:pointer"><input type="radio" name="pri-tpot" value="3" checked> Medium</label>
+                <label style="cursor:pointer"><input type="radio" name="pri-tpot" value="9"> High</label>
+            </span>
+        </div>
+
+        <div class="obj-row" style="display:flex;align-items:center;gap:12px;padding:7px 10px;border-radius:4px">
+            <input type="checkbox" id="obj-tp" checked>
+            <label for="obj-tp" style="flex:1;cursor:pointer;user-select:none">
+                <strong>Throughput</strong>
+                <span class="hint" style="margin-left:6px">처리량 tok/s (↑ 높을수록 좋음)</span>
+            </label>
+            <span class="obj-pri" style="display:flex;gap:14px">
+                <label style="cursor:pointer"><input type="radio" name="pri-tp" value="1"> Low</label>
+                <label style="cursor:pointer"><input type="radio" name="pri-tp" value="3" checked> Medium</label>
+                <label style="cursor:pointer"><input type="radio" name="pri-tp" value="9"> High</label>
+            </span>
+        </div>
+
+        <div class="obj-row" style="display:flex;align-items:center;gap:12px;padding:7px 10px;border-radius:4px">
+            <input type="checkbox" id="obj-tokwh" checked>
+            <label for="obj-tokwh" style="flex:1;cursor:pointer;user-select:none">
+                <strong>Tok/Wh</strong>
+                <span class="hint" style="margin-left:6px">에너지 효율 (↑ 높을수록 좋음)</span>
+            </label>
+            <span class="obj-pri" style="display:flex;gap:14px">
+                <label style="cursor:pointer"><input type="radio" name="pri-tokwh" value="1"> Low</label>
+                <label style="cursor:pointer"><input type="radio" name="pri-tokwh" value="3" checked> Medium</label>
+                <label style="cursor:pointer"><input type="radio" name="pri-tokwh" value="9"> High</label>
+            </span>
+        </div>
+
+        <div class="obj-row" style="display:flex;align-items:center;gap:12px;padding:7px 10px;border-radius:4px">
+            <input type="checkbox" id="obj-power">
+            <label for="obj-power" style="flex:1;cursor:pointer;user-select:none">
+                <strong>Energy (Wh)</strong>
+                <span class="hint" style="margin-left:6px">총 에너지 소비 (↓ 낮을수록 좋음)</span>
+            </label>
+            <span class="obj-pri" style="display:flex;gap:14px">
+                <label style="cursor:pointer"><input type="radio" name="pri-power" value="1"> Low</label>
+                <label style="cursor:pointer"><input type="radio" name="pri-power" value="3" checked> Medium</label>
+                <label style="cursor:pointer"><input type="radio" name="pri-power" value="9"> High</label>
+            </span>
+        </div>
+
     </div>
 </section>
 
@@ -95,12 +144,6 @@
         <label><input type="checkbox" id="feat-prefix"> Prefix caching</label>
         <label><input type="checkbox" id="feat-attn-off"> Attention offload (PIM)</label>
     </div>
-    <div class="cc-row" style="margin-top: var(--space-md); display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-md)">
-        <label>TTFT weight <input id="w-ttft" type="range" min="0" max="100" value="25"> <span id="w-ttft-v">25</span></label>
-        <label>TPOT weight <input id="w-tpot" type="range" min="0" max="100" value="25"> <span id="w-tpot-v">25</span></label>
-        <label>Throughput <input id="w-tp" type="range" min="0" max="100" value="25"> <span id="w-tp-v">25</span></label>
-        <label>Power <input id="w-power" type="range" min="0" max="100" value="25"> <span id="w-power-v">25</span></label>
-    </div>
 </section>
 
 <section class="card">
@@ -108,6 +151,22 @@
         <button id="btn-dry-run" class="btn-secondary" type="button">Estimate count</button>
         <button id="btn-start" class="btn-primary" type="button">Start Exploration</button>
         <span id="dse-status" class="hint"></span>
+    </div>
+</section>
+
+<section class="card" id="dry-run-results" style="display:none">
+    <h2>Candidate List <span id="dry-run-count-label" class="hint"></span></h2>
+    <div style="max-height:400px; overflow-y:auto; border:1px solid var(--border); border-radius:4px">
+        <table class="matrix-table" id="dry-run-table">
+            <thead><tr>
+                <th>Candidate</th>
+                <th>Hardware</th>
+                <th>TP</th><th>PP</th><th>DP</th>
+                <th>P/D Layout</th>
+                <th>Simulate?</th>
+            </tr></thead>
+            <tbody id="dry-run-list-body"></tbody>
+        </table>
     </div>
 </section>
 {% endblock %}

@@ -57,6 +57,8 @@ class Constraints(BaseModel):
     throughput_min_tok_s: Optional[float] = Field(None, ge=0)
     power_max_w: Optional[float] = Field(None, ge=0)
     energy_max_wh: Optional[float] = Field(None, ge=0)
+    tokwh_min: Optional[float] = Field(None, ge=0,
+        description="Minimum energy efficiency: tokens per Wh (higher = better).")
 
 
 class FeatureFlags(BaseModel):
@@ -78,22 +80,25 @@ class ObjectiveWeights(BaseModel):
     """Weight per objective. Auto-normalized to sum=1 in validator.
 
     All directions are encoded *here*: latency/power are minimized, throughput
-    is maximized. The ranker applies the appropriate sign during scoring.
+    and tokwh are maximized. The ranker applies the appropriate sign during scoring.
     """
     ttft: float = Field(0.25, ge=0)
     tpot: float = Field(0.25, ge=0)
     throughput: float = Field(0.25, ge=0)
     power: float = Field(0.25, ge=0)
+    tokwh: float = Field(0.0, ge=0,
+        description="Energy efficiency weight (Tokens/Wh, higher is better).")
 
     @model_validator(mode="after")
     def _normalize(self) -> "ObjectiveWeights":
-        s = self.ttft + self.tpot + self.throughput + self.power
+        s = self.ttft + self.tpot + self.throughput + self.power + self.tokwh
         if s <= 0:
             raise ValueError("at least one weight must be > 0")
         self.ttft /= s
         self.tpot /= s
         self.throughput /= s
         self.power /= s
+        self.tokwh /= s
         return self
 
 

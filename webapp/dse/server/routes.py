@@ -25,17 +25,18 @@ import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from webapp.config import OUTPUT_DIR
 from webapp.hardware_catalog import build_catalog, list_hardware, list_models_for_hardware
 from webapp.runner import cancel_sweep, subscribe_events, unsubscribe_events
 
 from ..core.config_builder import write_candidate_cluster_json
-from ..core.generator import dry_run_count, generate_candidates, load_metadata
+from ..core.generator import dry_run_detail, generate_candidates, load_metadata
 from ..core.ranker import rank_candidates
 from ..core.runner import run_dse_job
 from ..core.schemas import JobSpec, ObjectiveWeights, SimulationResult
@@ -166,7 +167,6 @@ async def _execute_job(job_id: str, spec: JobSpec) -> None:
 
         # Reload candidate meta from disk — run_dse_job may have extended
         # the list with retry candidates beyond the initial `candidates`.
-        from types import SimpleNamespace
         all_cand_meta = _load_candidates_meta(job_dir)
         cand_by_label = {
             lbl: SimpleNamespace(hw_distribution=m["hw_distribution"])
@@ -222,13 +222,17 @@ async def api_catalog() -> JSONResponse:
 
 @dse_router.post("/dry-run")
 async def api_dry_run(spec: JobSpec) -> JSONResponse:
-    """Estimate candidate count without creating a job."""
+    """Estimate candidate count and return the full candidate list."""
     catalog = build_catalog()
     try:
-        unique_count, simulated_count = dry_run_count(spec, catalog)
+        unique_count, simulated_count, candidates = dry_run_detail(spec, catalog)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return JSONResponse({"estimated_candidates": unique_count, "simulated_candidates": simulated_count})
+    return JSONResponse({
+        "estimated_candidates": unique_count,
+        "simulated_candidates": simulated_count,
+        "candidates": candidates,
+    })
 
 
 @dse_router.post("/jobs")
@@ -246,7 +250,7 @@ async def api_create_job(spec: JobSpec, background: BackgroundTasks) -> JSONResp
     (job_dir / "spec_hash.txt").write_text(spec_hash)
 
     catalog = build_catalog()
-    _, simulated_count = dry_run_count(spec, catalog)
+    _, simulated_count, _ = dry_run_detail(spec, catalog)
 
     background.add_task(_execute_job, job_id, spec)
     return JSONResponse({"job_id": job_id, "cached": False, "estimated_candidates": simulated_count})
@@ -309,7 +313,6 @@ async def api_rerank(job_id: str, body: dict) -> JSONResponse:
 
     cand_meta = _load_candidates_meta(job_dir)
     # rank_candidates wants candidates_by_label objects with .hw_distribution
-    from types import SimpleNamespace
     cand_by_label = {
         lbl: SimpleNamespace(hw_distribution=m["hw_distribution"])
         for lbl, m in cand_meta.items()
@@ -346,15 +349,20 @@ async def api_delete_job(job_id: str) -> JSONResponse:
 async def api_events(job_id: str) -> StreamingResponse:
     """SSE — reuse webapp.runner.subscribe_events. sweep_id == job_id."""
     async def event_stream():
+        # SSE event protocol:
+        #   event: snapshot — full status.json payload sent once on connect
+        #   data: <json>    — per-candidate progress events from webapp.runner
+        #   data: {"type":"heartbeat"} — keepalive every ~5 s during idle
+        # The stream closes when sweep_state reaches "done"/"failed"/"cancelled".
         queue = subscribe_events(job_id)
         try:
-            # Initial snapshot
+            # Initial snapshot so the progress page can render existing state
+            # without waiting for the first queued event.
             job_dir = _job_dir(job_id)
             status_path = job_dir / "status.json"
             if status_path.exists():
                 snapshot = json.loads(status_path.read_text())
                 yield f"event: snapshot\ndata: {json.dumps(snapshot)}\n\n"
-            last_heartbeat = time.monotonic()
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=5)
@@ -362,9 +370,9 @@ async def api_events(job_id: str) -> StreamingResponse:
                     if event.get("sweep_state") in ("done", "failed", "cancelled"):
                         break
                 except asyncio.TimeoutError:
-                    if time.monotonic() - last_heartbeat > 5:
-                        yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
-                        last_heartbeat = time.monotonic()
+                    # No event in 5 s — send heartbeat so the browser knows
+                    # the connection is still alive.
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
         finally:
             unsubscribe_events(job_id, queue)
 

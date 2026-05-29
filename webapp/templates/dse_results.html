@@ -19,11 +19,12 @@
 <section class="card">
     <h2>Re-rank (no re-simulation)</h2>
     <p class="hint">Adjust weights and click Re-rank to recompute the score and Top-N without running new simulations.</p>
-    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-md);">
-        <label>TTFT <input id="rw-ttft" type="range" min="0" max="100" value="25"> <span id="rw-ttft-v">25</span></label>
-        <label>TPOT <input id="rw-tpot" type="range" min="0" max="100" value="25"> <span id="rw-tpot-v">25</span></label>
-        <label>Throughput <input id="rw-tp" type="range" min="0" max="100" value="25"> <span id="rw-tp-v">25</span></label>
-        <label>Power <input id="rw-power" type="range" min="0" max="100" value="25"> <span id="rw-power-v">25</span></label>
+    <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--space-md);">
+        <label>TTFT <input id="rw-ttft" type="range" min="0" max="100" value="20"> <span id="rw-ttft-v">20</span></label>
+        <label>TPOT <input id="rw-tpot" type="range" min="0" max="100" value="20"> <span id="rw-tpot-v">20</span></label>
+        <label>Throughput <input id="rw-tp" type="range" min="0" max="100" value="20"> <span id="rw-tp-v">20</span></label>
+        <label>Energy <input id="rw-power" type="range" min="0" max="100" value="20"> <span id="rw-power-v">20</span></label>
+        <label>Tok/Wh <input id="rw-tokwh" type="range" min="0" max="100" value="20"> <span id="rw-tokwh-v">20</span></label>
     </div>
     <div class="cc-row" style="margin-top: var(--space-md)">
         <label style="max-width: 100px">Top-N <input id="rerank-top-n" type="number" min="1" value="5"></label>

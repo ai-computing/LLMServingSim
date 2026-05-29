@@ -132,7 +132,7 @@
     }
 
     function wireSliders() {
-        ['ttft','tpot','tp','power'].forEach(id => {
+        ['ttft','tpot','tp','power','tokwh'].forEach(id => {
             const s = document.getElementById('rw-' + id);
             const v = document.getElementById('rw-' + id + '-v');
             s.addEventListener('input', () => v.textContent = s.value);
@@ -141,10 +141,11 @@
 
     async function rerank() {
         const weights = {
-            ttft: parseFloat(document.getElementById('rw-ttft').value),
-            tpot: parseFloat(document.getElementById('rw-tpot').value),
+            ttft:       parseFloat(document.getElementById('rw-ttft').value),
+            tpot:       parseFloat(document.getElementById('rw-tpot').value),
             throughput: parseFloat(document.getElementById('rw-tp').value),
-            power: parseFloat(document.getElementById('rw-power').value),
+            power:      parseFloat(document.getElementById('rw-power').value),
+            tokwh:      parseFloat(document.getElementById('rw-tokwh').value),
         };
         const topN = parseInt(document.getElementById('rerank-top-n').value, 10) || 5;
         const r = await fetch(`/api/dse/jobs/${JOB_ID}/rerank`, {

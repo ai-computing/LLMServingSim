@@ -86,8 +86,14 @@ async def run_dse_job(
         broadcast_final=False,  # finalize_sweep() called after all retry rounds
     )
 
-    # Retry loop — replace failed candidates with fresh ones from the
-    # untried portion of the candidate space (up to _MAX_RETRY_ROUNDS).
+    # Retry loop: replace failed/cancelled candidates with fresh ones drawn
+    # from the untried portion of the candidate space.  Each round:
+    #   1. Count failures in status.json.
+    #   2. Call generate_candidates(exclude_labels=tried_labels, override_max=N)
+    #      to get exactly N replacements not yet attempted.
+    #   3. Run them via run_sweep(merge=True) so status.json accumulates.
+    # This continues up to _MAX_RETRY_ROUNDS or until no failures remain or
+    # no untried candidates are left.
     catalog = build_catalog()
     metadata = load_metadata()
     tried_labels: set[str] = {c.label for c in candidates}
