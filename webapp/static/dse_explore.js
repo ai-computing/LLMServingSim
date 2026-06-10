@@ -136,6 +136,8 @@
                 max_combinations: parseInt(document.getElementById('search-max').value, 10) || 20,
                 sampling_strategy: document.getElementById('search-sampling').value,
                 random_seed: parseInt(document.getElementById('search-seed').value, 10) || 0,
+                use_stage1: document.getElementById('use-stage1').checked,
+                use_stage2: document.getElementById('use-stage2').checked,
             },
             weights: weights,
             top_n: parseInt(document.getElementById('top-n').value, 10) || 5,

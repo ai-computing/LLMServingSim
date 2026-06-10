@@ -47,6 +47,10 @@ class WorkloadSpec(BaseModel):
     num_req: int = Field(100, ge=1)
     timeout_s: Optional[int] = Field(None, ge=10,
         description="Per-candidate simulation timeout. None → use CONFIG_TIMEOUT_S.")
+    avg_prompt_len: int = Field(512, ge=1,
+        description="Average prompt length (tokens); used for TTFT roofline filter.")
+    max_seq_len: int = Field(2048, ge=1,
+        description="Max sequence length (prompt+output); used for KV cache memory check.")
 
 
 class Constraints(BaseModel):
@@ -74,6 +78,10 @@ class SearchConfig(BaseModel):
     max_combinations: int = Field(20, ge=1)
     sampling_strategy: Literal["random", "grid"] = "random"
     random_seed: int = 0
+    use_stage1: bool = Field(True,
+        description="Apply Stage 1 analytical filters before simulation.")
+    use_stage2: bool = Field(True,
+        description="Apply Stage 2 profile-based pre-ranking before sampling.")
 
 
 class ObjectiveWeights(BaseModel):

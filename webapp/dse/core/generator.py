@@ -16,6 +16,7 @@ Pipeline:
 from __future__ import annotations
 
 import random
+from dataclasses import replace as _dc_replace
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -106,11 +107,28 @@ def _config_spec_to_candidate(
     candidate_id: str,
     hw_counts: dict[str, int],
 ) -> CandidateConfig:
-    """Wrap a ConfigSpec with DSE-level metadata."""
+    """Wrap a ConfigSpec with DSE-level metadata.
+
+    For single-hardware scenarios, enumerate_configs() produces parallelism-only
+    labels (e.g. tp1_pp1_dp1) that collide across different hardware types — so
+    H100×1 and A6000×1 would both produce tp1_pp1_dp1 and the dedup would drop
+    all but the first.  Prefix the label with the hw distribution so each
+    hardware variant gets a unique identity.
+
+    Multi-hardware scenarios already produce unique het_* labels from
+    enumerate_configs, so those are left unchanged.
+    """
+    hw_distribution = {hw: cnt for hw, cnt in hw_counts.items() if cnt > 0}
+
+    if not spec_cs.label.startswith("het_"):
+        # Build prefix sorted for determinism: "A6000x2", "H100x1_A6000x1", etc.
+        hw_prefix = "_".join(f"{hw}x{cnt}" for hw, cnt in sorted(hw_distribution.items()))
+        spec_cs = _dc_replace(spec_cs, label=f"{hw_prefix}_{spec_cs.label}")
+
     return CandidateConfig(
         candidate_id=candidate_id,
         config_spec=spec_cs,
-        hw_distribution={hw: cnt for hw, cnt in hw_counts.items() if cnt > 0},
+        hw_distribution=hw_distribution,
         parallelism={"tp": spec_cs.tp, "pp": spec_cs.pp, "dp": spec_cs.dp},
         pd_layout=spec_cs.pd_layout,
         label=spec_cs.label,
@@ -169,12 +187,23 @@ def generate_candidates(
         }
 
         # Enumerate parallelism + P/D combinations
+        total_available = sum(hw_counts.values())
         try:
             specs = enumerate_configs(scenario, catalog)
         except Exception:
             # enumerate_configs raises on invalid scenario (e.g. unknown hw).
             # Skip silently — generator pre-filters should have caught it.
             continue
+
+        # Only keep configs that use ALL available NPUs in this hw_count bucket.
+        # enumerate_configs also generates under-utilised sub-configs
+        # (e.g. budget=2, dp=1, npu_num=1 → 1 NPU used).  In DSE the
+        # resource_pool min/max range already handles "try 1 card" vs "try 2
+        # cards" via separate hw_count iterations, so each iteration must
+        # produce only configs that fill its entire budget — otherwise
+        # RNGDx2_tp1_pp1_dp1 and RNGDx1_tp1_pp1_dp1 become identical runs.
+        specs = [cs for cs in specs
+                 if sum(inst.npu_num for inst in cs.instances) == total_available]
 
         for cs in specs:
             counter += 1
@@ -195,7 +224,21 @@ def generate_candidates(
 
     # Stage 1: analytical pre-filter — prune before sampling so the budget is
     # spent on physically feasible candidates only.
-    all_candidates, _s1_rejections = apply_stage1_filters(all_candidates, spec, metadata)
+    if spec.search.use_stage1:
+        all_candidates, _s1_rejections = apply_stage1_filters(all_candidates, spec, metadata)
+
+    # Stage 2: profile-based pre-ranking — sort survivors by predicted TTFT so
+    # that when sampling trims the list the best-predicted candidates are kept.
+    if spec.search.use_stage2 and all_candidates:
+        try:
+            from .stage2_predictor import apply_stage2_predictions
+            preds, _ = apply_stage2_predictions(all_candidates, spec, metadata)
+            pred_rank = {p["candidate_id"]: i for i, p in enumerate(preds)}
+            all_candidates.sort(
+                key=lambda c: pred_rank.get(c.candidate_id, len(all_candidates))
+            )
+        except Exception:
+            pass  # Stage 2 failure is non-fatal; keep original ordering
 
     # Remove already-tried labels (retry rounds)
     if exclude_labels:

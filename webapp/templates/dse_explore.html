@@ -147,6 +147,18 @@
 </section>
 
 <section class="card">
+    <h2>5. Pre-simulation Filters</h2>
+    <div class="cc-row" style="gap: var(--space-md); flex-wrap: wrap">
+        <label title="Stage 1: discard physically impossible candidates (memory, divisibility, roofline, communication, power) using closed-form checks.">
+            <input type="checkbox" id="use-stage1" checked> Stage 1 — analytical filter
+        </label>
+        <label title="Stage 2: rank surviving candidates by predicted TTFT/TPOT from llm_profile tables before sampling, so simulation budget is spent on the most promising configs.">
+            <input type="checkbox" id="use-stage2" checked> Stage 2 — profile pre-rank
+        </label>
+    </div>
+</section>
+
+<section class="card">
     <div class="actions">
         <button id="btn-dry-run" class="btn-secondary" type="button">Estimate count</button>
         <button id="btn-start" class="btn-primary" type="button">Start Exploration</button>
