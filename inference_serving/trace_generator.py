@@ -2164,12 +2164,25 @@ def _get_perf_row(perf_db, hardware, layer_name, input_len, kv_cache_len, tp_siz
         )
     
 def _get_attn_perf_row(perf_db, key):
-    try:
+    if key in perf_db:
         return perf_db[key]
-    except KeyError:
-        raise KeyError(
-            f"No perf entry for key={key} in attention performance DB."
-        )
+    # Nearest-neighbor fallback: minimize diff on first element, then second
+    target_a, target_b = key
+    best_row = None
+    best_da = float('inf')
+    best_db = float('inf')
+    for (a, b), row in perf_db.items():
+        da = abs(a - target_a)
+        db = abs(b - target_b)
+        if da < best_da or (da == best_da and db < best_db):
+            best_da = da
+            best_db = db
+            best_row = row
+    if best_row is not None:
+        return best_row
+    raise KeyError(
+        f"No perf entry for key={key} in attention performance DB."
+    )
 
 def _make_attn_db_key(hardware, model, batch):
     _kv_cache_prediction_granularity = 64

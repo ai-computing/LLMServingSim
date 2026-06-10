@@ -48,6 +48,7 @@ def main():
     parser.add_argument('--enable-sub-batch-interleaving', action='store_true', help="enable sub-batch interleaving for better resource utilization", default=False)
     parser.add_argument('--enable-attn-prediction', action='store_true', help="enable realtime attention prediction", default=False)
     parser.add_argument('--prioritize-prefill', action='store_true', help="prioritize prefill", default=False)
+    parser.add_argument('--enable-chunked-prefill', action='store_true', help="split prefill into chunks interleaved with decode", default=False)
     parser.add_argument('--block-size', type=int, help='kv cache block size unit of tokens', default=16)
     parser.add_argument('--dataset', type=str, help='dataset path', default=None)
     parser.add_argument('--output', type=str, help='output path', default=None)
@@ -87,6 +88,7 @@ def main():
             "Realtime attention prediction is enabled. This may slow down the simulation."
         )
     prioritize_prefill=args.prioritize_prefill
+    enable_chunked_prefill=args.enable_chunked_prefill
     dataset=args.dataset
     output_file=args.output
     is_init=args.gen
@@ -200,7 +202,8 @@ def main():
             instance["model_name"], instance["node_id"], instance_id, max_batch, max_num_batched_tokens,
             instance["npu_num"], instance["npu_group"], instance["npu_mem"]["mem_size"], cpu_mem_size[instance["node_id"]],
             inst2npu_mapping[instance_id], instance["pd_type"], fp, block_size, num_req, 
-            prioritize_prefill, enable_prefix_caching, enable_prefix_sharing, prefix_pool, pool_device, cxl_mem
+            prioritize_prefill, enable_prefix_caching, enable_prefix_sharing, prefix_pool, pool_device, cxl_mem,
+            enable_chunked_prefill
         ))
 
     # Controller for astra-sim process communication

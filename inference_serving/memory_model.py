@@ -172,7 +172,7 @@ class MemoryModel():
     def get_block_kv(self, batch_req, batch_len):
         block_kv_size = 0
         for i in range(batch_len):
-            if batch_req[i].evict or batch_req[i].is_init:
+            if batch_req[i].evict or (batch_req[i].is_init and getattr(batch_req[i], 'processed_tokens', 0) == 0):
                 hit = getattr(batch_req[i], 'npu_cache_hit', 0) if self.enable_prefix_caching else 0
                 needed = max(0, batch_req[i].input - hit)
                 num_blocks = needed // self.block_size + 1 # it includes kv_cache that will be generated in current iteration

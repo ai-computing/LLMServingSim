@@ -10,6 +10,7 @@ class Request:
         self.is_init = is_init
         self.original_input = input
         self.evict = False
+        self.processed_tokens = 0  # tokens processed so far in chunked prefill
         self.end_time = -1
         self.latency = -1
         self.queuing_delay = -1
