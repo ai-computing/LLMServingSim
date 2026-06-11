@@ -6,6 +6,19 @@
 </header>
 
 <section class="card">
+    <h2>Load from History</h2>
+    <p class="hint">과거에 실행했던 DSE 설정을 불러와 폼을 자동으로 채웁니다.</p>
+    <div class="cc-row" style="align-items: flex-end; gap: var(--space-md)">
+        <label style="flex: 1">Past configurations
+            <select id="history-select">
+                <option value="">-- 불러올 설정 선택 --</option>
+            </select>
+        </label>
+        <button id="btn-apply-history" class="btn-secondary" type="button" disabled style="white-space: nowrap">Apply</button>
+    </div>
+</section>
+
+<section class="card">
     <h2>1. Resource Pool</h2>
     <p class="hint">Hardware types and their allowed quantity ranges. Add rows for each hardware in your pool.</p>
     <table id="resource-pool" class="matrix-table">
@@ -159,9 +172,14 @@
 </section>
 
 <section class="card">
-    <div class="actions">
+    <div class="actions" style="flex-wrap: wrap; gap: var(--space-md)">
         <button id="btn-dry-run" class="btn-secondary" type="button">Estimate count</button>
         <button id="btn-start" class="btn-primary" type="button">Start Exploration</button>
+        <label style="display:flex; align-items:center; gap:6px; font-size:0.9em; white-space:nowrap">
+            Max concurrent
+            <input id="max-concurrent" type="number" min="1" style="width:70px"
+                   title="동시에 실행할 최대 시뮬레이션 수. 자동값은 CPU 코어 수와 여유 메모리로 결정됩니다.">
+        </label>
         <span id="dse-status" class="hint"></span>
     </div>
 </section>

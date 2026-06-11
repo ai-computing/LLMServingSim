@@ -33,11 +33,13 @@ from .config import (
     LINK_BW_DEFAULT,
     LINK_LATENCY_DEFAULT,
     MAIN_PY,
-    MAX_CONCURRENT,
     OUTPUT_DIR,
     REPO_ROOT,
+    SIM_CACHE_ROOT,
     SIM_ENV,
+    compute_max_concurrent,
 )
+from .sim_cache import get_cached_paths, lookup as cache_lookup, make_key as cache_make_key, save as cache_save
 from .parser import extract_error_excerpt, is_successful, parse_run
 
 # In-memory event queues: sweep_id -> list[asyncio.Queue]
@@ -205,6 +207,33 @@ async def _run_one_config_inner(
         return
     num_req = int(workload.get("num_req", 100))
 
+    # ── Simulation result cache ────────────────────────────────────────────
+    # Check whether an identical run (same cluster config + workload params)
+    # was completed in a previous sweep. If so, reuse the stored metrics and
+    # skip the subprocess entirely.
+    _cache_key: str | None = None
+    try:
+        _cluster_obj = json.loads(config_path.read_text())
+        _cache_key = cache_make_key(_cluster_obj, dataset_arg, num_req)
+        _cached = cache_lookup(SIM_CACHE_ROOT, _cache_key)
+        if _cached is not None:
+            _cached_log, _cached_csv = get_cached_paths(SIM_CACHE_ROOT, _cache_key)
+            if _cached_log.exists():
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(_cached_log, log_path)
+            if _cached_csv.exists():
+                csv_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(_cached_csv, csv_path)
+            await _update_config_state(
+                sweep_id, sweep_dir, label,
+                {"state": "done", "elapsed_s": 0.0,
+                 "metrics": _cached, "cached": True},
+            )
+            return
+    except Exception:
+        pass  # cache failure must never block simulation
+    # ── End cache check ───────────────────────────────────────────────────
+
     try:
         csv_arg = str(csv_path.relative_to(REPO_ROOT))
     except ValueError:
@@ -342,6 +371,12 @@ async def _run_one_config_inner(
         k: v for k, v in metrics.items()
         if k not in ("ttft_values_ms", "itl_values_ms")
     }
+    # Persist to simulation cache so future sweeps with the same config skip
+    # the subprocess. Fire-and-forget in a thread (non-blocking).
+    if _cache_key is not None:
+        asyncio.create_task(asyncio.to_thread(
+            cache_save, SIM_CACHE_ROOT, _cache_key, status_metrics, log_path, csv_path,
+        ))
     await _update_config_state(
         sweep_id, sweep_dir, label,
         {"state": "done", "elapsed_s": elapsed, "metrics": status_metrics},
@@ -424,6 +459,7 @@ async def run_sweep(
     workload: dict,
     merge: bool = False,
     broadcast_final: bool = True,
+    max_concurrent: int | None = None,
 ) -> None:
     """Top-level sweep coroutine.
 
@@ -479,7 +515,9 @@ async def run_sweep(
         cfg_path.write_text(json.dumps(cluster_json, indent=4))
         config_paths[spec.label] = cfg_path
 
-    sem = asyncio.Semaphore(MAX_CONCURRENT)
+    auto = compute_max_concurrent()
+    concurrency = min(max_concurrent, auto) if max_concurrent is not None else auto
+    sem = asyncio.Semaphore(concurrency)
     _cancel_flags[sweep_id] = False
     _running_procs.setdefault(sweep_id, {})
 

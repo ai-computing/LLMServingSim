@@ -59,6 +59,11 @@
                 for (const [label, entry] of Object.entries(snap.configs || {})) {
                     applyUpdate({label, ...entry});
                 }
+                // If the job was already finished when we connected, enable button now
+                if (['done', 'failed', 'cancelled'].includes(snap.state)) {
+                    document.getElementById('btn-results').classList.remove('disabled');
+                    es.close();
+                }
             } catch (e) {}
         });
         document.getElementById('btn-cancel').addEventListener('click', async () => {
@@ -152,7 +157,17 @@
                 }
             }
         }
-        if (ev.state) row.querySelector('.dse-state').textContent = ev.state;
+        if (ev.state) {
+            const stateCell = row.querySelector('.dse-state');
+            stateCell.textContent = ev.state;
+            if (ev.cached) {
+                const badge = document.createElement('span');
+                badge.className = 'badge-cached';
+                badge.textContent = 'cached';
+                stateCell.appendChild(document.createTextNode(' '));
+                stateCell.appendChild(badge);
+            }
+        }
         if (ev.elapsed_s != null) row.querySelector('.dse-elapsed').textContent = ev.elapsed_s.toFixed(1);
         // Defensive: failed/cancelled rows must never display metrics, even if
         // legacy status.json has stale fields from a runner race (see invariant

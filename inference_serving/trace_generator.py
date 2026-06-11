@@ -34,6 +34,11 @@ _attn_perf_db_cache = {}
 _attn_predictor_cache = {}
 _attn_prediction_value_cache = {}
 
+# Nearest-neighbor fallback cache for _get_attn_perf_row.
+# key: (id(perf_db), (a, b))  →  value: matched row
+# Prevents O(n) scan of 16k-row CSVs on every cache miss.
+_attn_nn_cache: dict = {}
+
 logger = get_logger("TraceGenerator")
 
 # Wrapper function that creates trace for a instance
@@ -2166,6 +2171,10 @@ def _get_perf_row(perf_db, hardware, layer_name, input_len, kv_cache_len, tp_siz
 def _get_attn_perf_row(perf_db, key):
     if key in perf_db:
         return perf_db[key]
+    # Check nearest-neighbor cache first (avoids O(n) scan on repeated misses)
+    cache_key = (id(perf_db), key)
+    if cache_key in _attn_nn_cache:
+        return _attn_nn_cache[cache_key]
     # Nearest-neighbor fallback: minimize diff on first element, then second
     target_a, target_b = key
     best_row = None
@@ -2179,6 +2188,7 @@ def _get_attn_perf_row(perf_db, key):
             best_db = db
             best_row = row
     if best_row is not None:
+        _attn_nn_cache[cache_key] = best_row
         return best_row
     raise KeyError(
         f"No perf entry for key={key} in attention performance DB."

@@ -531,3 +531,14 @@ input[type=range] { width: 100%; }
 .row-hover-preview:not(.row-highlighted) {
     background-color: rgba(255, 243, 191, 0.45) !important;
 }
+
+/* Simulation cache hit badge shown in the DSE progress table */
+.badge-cached {
+    background: #e6f4ea;
+    color: #1a7431;
+    font-size: 0.72em;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 3px;
+    vertical-align: middle;
+}

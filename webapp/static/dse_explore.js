@@ -4,15 +4,23 @@
 
     let catalog = null;     // /api/dse/catalog response
     let datasets = [];
+    let historyJobs = [];   // /api/dse/jobs/history response
 
     document.addEventListener('DOMContentLoaded', async () => {
         await loadCatalog();
         await loadDatasets();
+        await loadHistory();
+        await loadConcurrency();
         // Seed one resource pool row
         addHwRow();
-        document.getElementById('btn-add-hw').addEventListener('click', addHwRow);
+        document.getElementById('btn-add-hw').addEventListener('click', () => addHwRow());
         document.getElementById('btn-dry-run').addEventListener('click', dryRun);
         document.getElementById('btn-start').addEventListener('click', startJob);
+        document.getElementById('history-select').addEventListener('change', () => {
+            document.getElementById('btn-apply-history').disabled =
+                !document.getElementById('history-select').value;
+        });
+        document.getElementById('btn-apply-history').addEventListener('click', applyHistorySpec);
         wirePriorityRows();
     });
 
@@ -49,7 +57,132 @@
         }
     }
 
-    function addHwRow() {
+    async function loadConcurrency() {
+        try {
+            const r = await fetch('/api/dse/concurrency');
+            const j = await r.json();
+            const el = document.getElementById('max-concurrent');
+            el.value = j.max_concurrent;
+            el.max = j.max_concurrent;
+            el.title += ` (자동값: ${j.max_concurrent})`;
+        } catch (e) {
+            console.warn('Failed to load concurrency:', e);
+        }
+    }
+
+    async function loadHistory() {
+        try {
+            const r = await fetch('/api/dse/jobs/history');
+            if (!r.ok) return;
+            historyJobs = await r.json();
+            const sel = document.getElementById('history-select');
+            for (const job of historyJobs) {
+                const opt = document.createElement('option');
+                opt.value = job.job_id;
+                const date = job.created_at
+                    ? job.created_at.substring(0, 16).replace('T', ' ')
+                    : '?';
+                const model = job.model_name
+                    ? job.model_name.split('/').pop()
+                    : '?';
+                opt.textContent = `${date} | ${model} | ${job.hw_summary || '?'} [${job.state}]`;
+                sel.appendChild(opt);
+            }
+        } catch (e) {
+            console.warn('Failed to load DSE history:', e);
+        }
+    }
+
+    function applyHistorySpec() {
+        const sel = document.getElementById('history-select');
+        const job = historyJobs.find(j => j.job_id === sel.value);
+        if (!job || !job.spec) return;
+        applySpec(job.spec);
+    }
+
+    function applySpec(spec) {
+        // 1. Resource Pool
+        const tbody = document.getElementById('resource-pool-body');
+        tbody.innerHTML = '';
+        for (const item of (spec.resource_pool?.items || [])) {
+            addHwRow(item.hw, item.min, item.max);
+        }
+        const totalMaxEl = document.getElementById('total-max');
+        if (spec.resource_pool?.total_max_npus != null) {
+            totalMaxEl.value = spec.resource_pool.total_max_npus;
+        } else {
+            totalMaxEl.value = '';
+        }
+
+        // 2. Model & Workload
+        if (spec.model?.name) {
+            document.getElementById('model-select').value = spec.model.name;
+        }
+        if (spec.model?.fp != null) {
+            document.getElementById('fp-select').value = String(spec.model.fp);
+        }
+        if (spec.workload?.dataset) {
+            document.getElementById('dataset-select').value = spec.workload.dataset;
+        }
+        if (spec.workload?.num_req != null) {
+            document.getElementById('num-req').value = spec.workload.num_req;
+        }
+        if (spec.workload?.timeout_s != null) {
+            document.getElementById('timeout-s').value = spec.workload.timeout_s;
+        }
+
+        // 3. Features
+        if (spec.features) {
+            document.getElementById('feat-pd').checked = !!spec.features.allow_pd_disagg;
+            document.getElementById('feat-prefix').checked = !!spec.features.prefix_caching;
+            document.getElementById('feat-attn-off').checked = !!spec.features.attn_offloading;
+        }
+
+        // 4. Search
+        if (spec.search) {
+            if (spec.search.max_combinations != null)
+                document.getElementById('search-max').value = spec.search.max_combinations;
+            if (spec.search.sampling_strategy)
+                document.getElementById('search-sampling').value = spec.search.sampling_strategy;
+            if (spec.search.random_seed != null)
+                document.getElementById('search-seed').value = spec.search.random_seed;
+            if (spec.search.use_stage1 != null)
+                document.getElementById('use-stage1').checked = spec.search.use_stage1;
+            if (spec.search.use_stage2 != null)
+                document.getElementById('use-stage2').checked = spec.search.use_stage2;
+        }
+        if (spec.top_n != null)
+            document.getElementById('top-n').value = spec.top_n;
+        if (spec.max_concurrent != null)
+            document.getElementById('max-concurrent').value = spec.max_concurrent;
+
+        // 5. Weights / objectives — set radios first, then checkboxes, then fire change
+        if (spec.weights) {
+            // spec key → checkbox id / radio name (note: throughput → obj-tp, pri-tp)
+            const OBJ_MAP = [
+                ['ttft',       'ttft',  'ttft'],
+                ['tpot',       'tpot',  'tpot'],
+                ['throughput', 'tp',    'tp'],
+                ['power',      'power', 'power'],
+                ['tokwh',      'tokwh', 'tokwh'],
+            ];
+            for (const [specKey, cbId, priName] of OBJ_MAP) {
+                const w = spec.weights[specKey];
+                if (w == null) continue;
+                const radioVal = w >= 9 ? '9' : w >= 3 ? '3' : '1';
+                const radio = document.querySelector(`input[name="pri-${priName}"][value="${radioVal}"]`);
+                if (radio) radio.checked = true;
+                const cb = document.getElementById(`obj-${cbId}`);
+                if (cb) cb.checked = w > 0;
+            }
+        }
+        // Trigger visual update for priority rows
+        document.querySelectorAll('.obj-row input[type="checkbox"]').forEach(
+            cb => cb.dispatchEvent(new Event('change'))
+        );
+    }
+
+    function addHwRow(hwValue, minValue, maxValue) {
         if (!catalog) return;
         const tbody = document.getElementById('resource-pool-body');
         const tr = document.createElement('tr');
@@ -59,8 +192,9 @@
             opt.value = hw; opt.textContent = hw;
             select.appendChild(opt);
         }
-        const minI = mkInput('number', '0', 0);
-        const maxI = mkInput('number', '2', 0);
+        if (hwValue != null) select.value = hwValue;
+        const minI = mkInput('number', minValue != null ? String(minValue) : '0', 0);
+        const maxI = mkInput('number', maxValue != null ? String(maxValue) : '2', 0);
         const rm = document.createElement('button');
         rm.type = 'button'; rm.textContent = '✕';
         rm.className = 'btn-secondary'; rm.style.padding = '4px 10px';
@@ -141,6 +275,7 @@
             },
             weights: weights,
             top_n: parseInt(document.getElementById('top-n').value, 10) || 5,
+            max_concurrent: parseInt(document.getElementById('max-concurrent').value, 10) || null,
         };
     }
 

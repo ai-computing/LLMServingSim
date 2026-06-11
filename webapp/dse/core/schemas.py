@@ -120,6 +120,8 @@ class JobSpec(BaseModel):
     search: SearchConfig = Field(default_factory=SearchConfig)
     weights: ObjectiveWeights = Field(default_factory=ObjectiveWeights)
     top_n: int = Field(5, ge=1)
+    max_concurrent: Optional[int] = Field(None, ge=1,
+        description="Max simultaneous simulations. None → auto from CPU/RAM.")
 
 
 # ----------------------------------------------------------------------------

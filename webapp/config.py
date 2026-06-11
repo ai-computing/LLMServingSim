@@ -13,6 +13,7 @@ LLM_PROFILE_DIR = REPO_ROOT / "llm_profile/perf_models"
 CLUSTER_CONFIG_DIR = REPO_ROOT / "cluster_config"
 DATASET_DIR = REPO_ROOT / "dataset"
 OUTPUT_DIR = REPO_ROOT / "output/web_sweeps"
+SIM_CACHE_ROOT = REPO_ROOT / "output" / "sim_cache"
 MAIN_PY = REPO_ROOT / "main.py"
 
 # Simulator env -- required for AnalyticalAstra binary and `python` symlink
@@ -23,8 +24,40 @@ SIM_ENV = {
     "PATH": os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", ""),
 }
 
-MAX_CONCURRENT = min(10, max(1, (os.cpu_count() or 4) // 2))
 CONFIG_TIMEOUT_S = 120  # kill a config run after 1 min
+
+# Dynamic concurrency tuning
+MEM_PER_SIM_GB = 2.0   # estimated RAM per simulation subprocess
+MEM_RESERVE_GB = 4.0   # headroom to leave for OS + webapp
+
+
+def _available_mem_gb() -> float:
+    """Read MemAvailable from /proc/meminfo; returns 8.0 on failure."""
+    try:
+        with open("/proc/meminfo") as _f:
+            for _line in _f:
+                if _line.startswith("MemAvailable:"):
+                    return int(_line.split()[1]) / (1024 * 1024)
+    except Exception:
+        pass
+    return 8.0
+
+
+def compute_max_concurrent() -> int:
+    """Return concurrency limit derived from available CPU cores and free RAM.
+
+    cpu_limit  = os.cpu_count()   (one slot per logical core)
+    mem_limit  = floor((MemAvailable - MEM_RESERVE_GB) / MEM_PER_SIM_GB)
+    result     = max(1, min(cpu_limit, mem_limit))
+    """
+    cpu_limit = os.cpu_count() or 4
+    usable_gb = max(0.0, _available_mem_gb() - MEM_RESERVE_GB)
+    mem_limit = max(1, int(usable_gb / MEM_PER_SIM_GB))
+    return max(1, min(cpu_limit, mem_limit))
+
+
+# Static snapshot used for docstrings / comments only.
+MAX_CONCURRENT = compute_max_concurrent()
 SOFT_CAP = 20           # warn user if sweep exceeds this count
 
 # Default hardware memory specs -- used when building cluster JSONs

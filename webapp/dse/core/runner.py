@@ -84,6 +84,7 @@ async def run_dse_job(
         sweep_dir=job_dir,
         workload=workload,
         broadcast_final=False,  # finalize_sweep() called after all retry rounds
+        max_concurrent=spec.max_concurrent,
     )
 
     # Retry loop: replace failed/cancelled candidates with fresh ones drawn
@@ -146,6 +147,7 @@ async def run_dse_job(
             workload=workload,
             merge=True,
             broadcast_final=False,
+            max_concurrent=spec.max_concurrent,
         )
 
     # Broadcast terminal sweep_state once — after all retry rounds complete.

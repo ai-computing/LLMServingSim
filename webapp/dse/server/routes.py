@@ -31,7 +31,7 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from webapp.config import OUTPUT_DIR
+from webapp.config import OUTPUT_DIR, compute_max_concurrent
 from webapp.hardware_catalog import build_catalog, list_hardware, list_models_for_hardware
 from webapp.runner import cancel_sweep, subscribe_events, unsubscribe_events
 
@@ -197,6 +197,12 @@ async def _execute_job(job_id: str, spec: JobSpec) -> None:
 # ---------------------------------------------------------------------------
 # Routes — /api/dse/...
 
+@dse_router.get("/concurrency")
+async def api_concurrency() -> JSONResponse:
+    """Return current auto-computed max concurrent simulation count."""
+    return JSONResponse({"max_concurrent": compute_max_concurrent()})
+
+
 @dse_router.get("/catalog")
 async def api_catalog() -> JSONResponse:
     """Hardware + models + availability — merged from build_catalog() + 03_catalog.yaml."""
@@ -261,6 +267,41 @@ async def api_list_jobs() -> JSONResponse:
     return JSONResponse({"jobs": _list_jobs()})
 
 
+@dse_router.get("/jobs/history")
+async def api_jobs_history() -> JSONResponse:
+    """Return past DSE jobs with spec for the history dropdown."""
+    DSE_ROOT.mkdir(parents=True, exist_ok=True)
+    out = []
+    for p in DSE_ROOT.iterdir():
+        if not p.is_dir() or p.name.endswith(".deleted"):
+            continue
+        spec_path = p / "spec.json"
+        if not spec_path.exists():
+            continue
+        try:
+            spec = json.loads(spec_path.read_text())
+            status_path = p / "status.json"
+            status = json.loads(status_path.read_text()) if status_path.exists() else {}
+            rp = spec.get("resource_pool", {})
+            hw_summary = ", ".join(
+                f"{it['hw']} x[{it['min']}-{it['max']}]"
+                for it in rp.get("items", [])
+            )
+            out.append({
+                "job_id": p.name,
+                "created_at": status.get("created_at", ""),
+                "state": status.get("state", "unknown"),
+                "model_name": spec.get("model", {}).get("name", ""),
+                "dataset": spec.get("workload", {}).get("dataset", ""),
+                "hw_summary": hw_summary,
+                "spec": spec,
+            })
+        except Exception:
+            continue
+    out.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    return JSONResponse(out)
+
+
 @dse_router.get("/jobs/{job_id}")
 async def api_get_job(job_id: str) -> JSONResponse:
     job_dir = _job_dir(job_id)
@@ -323,8 +364,9 @@ async def api_rerank(job_id: str, body: dict) -> JSONResponse:
         candidates_by_label=cand_by_label, diversity=True,
     )
     return JSONResponse({
-        "top_n":  [ranked.all_results[i].model_dump() for i in ranked.top_n_indices],
-        "pareto": [ranked.all_results[i].model_dump() for i in ranked.pareto_indices],
+        "top_n":       [ranked.all_results[i].model_dump() for i in ranked.top_n_indices],
+        "pareto":      [ranked.all_results[i].model_dump() for i in ranked.pareto_indices],
+        "all_results": [r.model_dump() for r in ranked.all_results],
         "weights_used": weights.model_dump(),
     })
 
@@ -363,6 +405,10 @@ async def api_events(job_id: str) -> StreamingResponse:
             if status_path.exists():
                 snapshot = json.loads(status_path.read_text())
                 yield f"event: snapshot\ndata: {json.dumps(snapshot)}\n\n"
+                # Job already finished before client connected — close stream immediately
+                if snapshot.get("state") in ("done", "failed", "cancelled"):
+                    yield f"data: {json.dumps({'sweep_state': snapshot['state']})}\n\n"
+                    return
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=5)
