@@ -72,7 +72,7 @@ def main():
             
         input_combinations = get_attention_input_combinations(
             max_seq_len=args.max_len,
-            max_model_len=getattr(model_config, "max_position_embeddings", 2048),
+            max_model_len=args.max_len,
             min_batch_size=args.min_batch_size,
             max_batch_size=args.max_batch_size,
             profile_only_prefill=args.profile_only_prefill,

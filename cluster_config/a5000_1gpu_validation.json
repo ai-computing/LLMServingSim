@@ -28,9 +28,9 @@
                 "base_node_power": 60,
                 "npu": {
                     "A5000": {
-                        "idle_power": 25,
-                        "standby_power": 80,
-                        "active_power": 200,
+                        "idle_power": 18,
+                        "standby_power": 20,
+                        "active_power": 130,
                         "standby_duration": 18
                     }
                 },
