@@ -5,6 +5,8 @@
 set -e
 MODEL="${MODEL:-meta-llama/Llama-3.1-8B}"
 PORT=8002
+export LD_LIBRARY_PATH=/usr/local/lib/ollama/cuda_v13:${LD_LIBRARY_PATH}
+export LD_PRELOAD=/usr/local/lib/ollama/mlx_cuda_v13/libnccl.so.2
 
 echo "Starting vLLM server (TP=2) on port $PORT ..."
 echo "In another terminal run:"
