@@ -20,7 +20,7 @@
                         "mem_latency": 0
                     },
                     "npu_num": 2,
-                    "npu_group": 2,
+                    "npu_group": 1,
                     "pd_type": null
                 }
             ],

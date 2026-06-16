@@ -158,7 +158,41 @@ APC 설정 불일치는 시뮬레이터-vLLM 오차의 원인이 아님. APC ON/
 
 ---
 
-## 6. 개선 방향
+## 6. TP=2 Cluster Config 버그 수정 및 재실험 (2026-06-16)
+
+### 6.1 발견된 버그
+
+`a5000_2gpu_tp2_validation.json`의 `npu_group=2` 설정이 실제로는 **DP=2 (Data Parallel)**였습니다.
+
+```
+npu_num=2, npu_group=2 → npus_per_group = 2 // 2 = 1 → tp1/layers.csv 로드
+npu_num=2, npu_group=1 → npus_per_group = 2 // 1 = 2 → tp2/layers.csv 로드  ✓
+```
+
+`npu_group`은 독립 인스턴스 그룹 수이고, `npus_per_group = npu_num // npu_group`이 실제 Tensor Parallel 크기입니다. 따라서 기존 "TP=2 시뮬레이션"은 TP=1 프로파일로 실행된 DP=2 시뮬레이션이었습니다.
+
+### 6.2 수정 후 결과 (`npu_group=1`)
+
+| 지표 | vLLM TP=2 | Sim (이전 npu_group=2) | Sim (수정 npu_group=1) |
+|------|----------|----------------------|----------------------|
+| TTFT p50 | 102.6 ms | 37.0 ms | 32.3 ms |
+| TTFT p99 | 428.1 ms | 47.7 ms | 57.5 ms |
+| TPOT p50 | **22.3 ms** | **30.2 ms (역전)** | **18.4 ms (정상)** |
+| TPOT p99 | 65.4 ms | 30.9 ms | 19.0 ms |
+
+### 6.3 효과
+
+- **TPOT 역전 해소**: 이전 30.2ms(시뮬) > 22.3ms(vLLM) 역전 → 수정 후 18.4ms(시뮬) < 22.3ms(vLLM) 정상
+- **TPOT MAPE**: 42.1% → 약 17.5% (방향 일치, 시뮬이 약간 과소 예측)
+- 남은 TPOT 오차(~4ms)는 all-reduce 통신 지연 + Python 스케줄링 오버헤드 미반영으로 해석
+
+### 6.4 다중 TP 지원 가능성
+
+프로파일 경로가 `tp{n}/layers.csv`로 분리되어 있고, `npu_num=n, npu_group=1`만 설정하면 임의의 TP를 시뮬레이션할 수 있습니다. TP=4는 A5000 4장 프로파일링 → `tp4/layers.csv` 생성 후 즉시 지원 가능합니다.
+
+---
+
+## 7. 개선 방향
 
 | 우선순위 | 항목 | 예상 효과 |
 |---------|------|-----------|
@@ -169,7 +203,7 @@ APC 설정 불일치는 시뮬레이터-vLLM 오차의 원인이 아님. APC ON/
 
 ---
 
-## 7. Files
+## 8. Files
 
 | 파일 | 설명 |
 |------|------|
@@ -187,4 +221,6 @@ APC 설정 불일치는 시뮬레이터-vLLM 오차의 원인이 아님. APC ON/
 | `validation/sim_tp2_apc_stdout.txt` | 시뮬레이터 TP=2 APC ON 전체 출력 (hit ratio 포함) |
 | `validation/results_summary.csv` | MAPE / Pearson r 요약 테이블 |
 | `cluster_config/a5000_1gpu_validation.json` | TP=1 클러스터 설정 |
-| `cluster_config/a5000_2gpu_tp2_validation.json` | TP=2 클러스터 설정 |
+| `cluster_config/a5000_2gpu_tp2_validation.json` | TP=2 클러스터 설정 (npu_group=1 수정됨) |
+| `validation/sim_tp2_fixed_results.csv` | 시뮬레이터 TP=2 수정 후 per-request 결과 |
+| `validation/sim_tp2_fixed_stdout.txt` | 시뮬레이터 TP=2 수정 후 전체 출력 |
