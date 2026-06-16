@@ -118,7 +118,47 @@ vLLM TTFT = 큐잉 대기 + 스케줄링 오버헤드 + 연산 + 응답 전송 �
 
 ---
 
-## 5. 개선 방향
+## 5. Prefix Caching (APC) 영향 분석 (추가 실험, 2026-06-16)
+
+### 5.1 배경
+
+초기 실험에서 vLLM은 `enable_prefix_caching=True` (기본값)으로, 시뮬레이터는 APC 비활성화 상태로 실행되어 설정이 불일치했습니다. 이를 보정하기 위해 두 방향으로 추가 실험을 수행했습니다.
+
+- **실험 A**: 시뮬레이터에 `--enable-prefix-caching` 활성화
+- **실험 B**: vLLM에 `--no-enable-prefix-caching --no-enable-chunked-prefill` 비활성화
+
+### 5.2 시뮬레이터 APC 실행 결과 (실험 A)
+
+시뮬레이터 prefix cache hit ratio: **21.46%** (4,512 / 21,027 tokens, TP=1·TP=2 동일)
+
+| 지표 | TP=1 APC OFF | TP=1 APC ON | TP=2 APC OFF | TP=2 APC ON |
+|------|-------------|------------|-------------|------------|
+| TTFT p50 | 45.4 ms | 44.7 ms | 37.0 ms | 37.2 ms |
+| TTFT p99 | 65.1 ms | 63.5 ms | 47.7 ms | 47.6 ms |
+| TPOT p50 | 31.0 ms | 30.9 ms | 30.2 ms | 30.3 ms |
+| TPOT p99 | 32.3 ms | 32.3 ms | 30.9 ms | 30.9 ms |
+
+**결과**: hit ratio 21%임에도 APC 효과가 ≤1ms로 거의 없음. ShareGPT 데이터셋은 독립적인 대화라 hit 블록이 있어도 나머지 prefill 연산이 지배적이기 때문.
+
+### 5.3 vLLM APC 비활성화 결과 (실험 B)
+
+| 지표 | TP=1 APC ON | TP=1 APC OFF | TP=2 APC ON | TP=2 APC OFF |
+|------|------------|-------------|------------|-------------|
+| TTFT p50 | 133.7 ms | 155.6 ms (+16%) | 102.6 ms | 126.6 ms (+23%) |
+| TTFT p99 | 403.1 ms | 436.5 ms | 428.1 ms | 434.6 ms |
+| TPOT p50 | 34.1 ms | 37.3 ms (+9%) | 22.3 ms | 24.3 ms (+9%) |
+| TPOT p99 | 103.2 ms | 147.1 ms | 65.4 ms | 55.5 ms |
+| Throughput | 562 tok/s | 636 tok/s | 714 tok/s | 871 tok/s |
+
+**결과**: APC를 끄면 오히려 더 느려짐. chunked prefill이 배치 효율을 높이는 효과가 더 크기 때문. APC ON이 실제 프로덕션에 더 가까운 조건.
+
+### 5.4 결론
+
+APC 설정 불일치는 시뮬레이터-vLLM 오차의 원인이 아님. APC ON/OFF에 관계없이 TTFT 3배 갭은 유지됨. **오차의 근본 원인은 큐잉/스케줄링 오버헤드 미반영**임이 확인됨.
+
+---
+
+## 6. 개선 방향
 
 | 우선순위 | 항목 | 예상 효과 |
 |---------|------|-----------|
@@ -129,16 +169,22 @@ vLLM TTFT = 큐잉 대기 + 스케줄링 오버헤드 + 연산 + 응답 전송 �
 
 ---
 
-## 6. Files
+## 7. Files
 
 | 파일 | 설명 |
 |------|------|
-| `validation/vllm_tp1_results.jsonl` | vLLM TP=1 per-request TTFT/TPOT |
-| `validation/vllm_tp2_results.jsonl` | vLLM TP=2 per-request TTFT/TPOT |
-| `validation/sim_tp1_results.csv` | 시뮬레이터 TP=1 per-request 결과 |
-| `validation/sim_tp2_results.csv` | 시뮬레이터 TP=2 per-request 결과 |
-| `validation/sim_tp1_stdout.txt` | 시뮬레이터 TP=1 전체 출력 (전력 포함) |
-| `validation/sim_tp2_stdout.txt` | 시뮬레이터 TP=2 전체 출력 (전력 포함) |
+| `validation/vllm_tp1_results.jsonl` | vLLM TP=1 (APC ON) per-request TTFT/TPOT |
+| `validation/vllm_tp2_results.jsonl` | vLLM TP=2 (APC ON) per-request TTFT/TPOT |
+| `validation/vllm_tp1_noapc_results.jsonl` | vLLM TP=1 (APC OFF) per-request TTFT/TPOT |
+| `validation/vllm_tp2_noapc_results.jsonl` | vLLM TP=2 (APC OFF) per-request TTFT/TPOT |
+| `validation/sim_tp1_results.csv` | 시뮬레이터 TP=1 (APC OFF) per-request 결과 |
+| `validation/sim_tp2_results.csv` | 시뮬레이터 TP=2 (APC OFF) per-request 결과 |
+| `validation/sim_tp1_apc_results.csv` | 시뮬레이터 TP=1 (APC ON) per-request 결과 |
+| `validation/sim_tp2_apc_results.csv` | 시뮬레이터 TP=2 (APC ON) per-request 결과 |
+| `validation/sim_tp1_stdout.txt` | 시뮬레이터 TP=1 APC OFF 전체 출력 |
+| `validation/sim_tp2_stdout.txt` | 시뮬레이터 TP=2 APC OFF 전체 출력 |
+| `validation/sim_tp1_apc_stdout.txt` | 시뮬레이터 TP=1 APC ON 전체 출력 (hit ratio 포함) |
+| `validation/sim_tp2_apc_stdout.txt` | 시뮬레이터 TP=2 APC ON 전체 출력 (hit ratio 포함) |
 | `validation/results_summary.csv` | MAPE / Pearson r 요약 테이블 |
 | `cluster_config/a5000_1gpu_validation.json` | TP=1 클러스터 설정 |
 | `cluster_config/a5000_2gpu_tp2_validation.json` | TP=2 클러스터 설정 |
