@@ -224,3 +224,91 @@ npu_num=2, npu_group=1 → npus_per_group = 2 // 1 = 2 → tp2/layers.csv 로드
 | `cluster_config/a5000_2gpu_tp2_validation.json` | TP=2 클러스터 설정 (npu_group=1 수정됨) |
 | `validation/sim_tp2_fixed_results.csv` | 시뮬레이터 TP=2 수정 후 per-request 결과 |
 | `validation/sim_tp2_fixed_stdout.txt` | 시뮬레이터 TP=2 수정 후 전체 출력 |
+| `validation/synthesize_tp.py` | TP 레이턴시 합성기 + Phase 5 역검증 스크립트 |
+| `cluster_config/a5000_4gpu_tp4_synth.json` | TP=4 합성 시뮬레이션 클러스터 설정 |
+| `validation/sim_tp4_synth_results.csv` | 시뮬레이터 TP=4 합성 per-request 결과 |
+| `validation/sim_tp4_synth_stdout.txt` | 시뮬레이터 TP=4 합성 전체 출력 |
+
+---
+
+## 9. TP=4 외삽 (Phase 5 역검증 + 합성 시뮬레이션)
+
+> **목적**: A5000 2장(TP=1,2)만으로 TP=4 성능 예측 (`TODO_TP4_extrapolation.md` Phase 2B/4/5 구현)
+
+### 9.1 Phase 5 역검증 — TP=1 → TP=2 예측 정확도
+
+합성 신뢰성 확인을 위해 TP=2를 TP=1만으로 예측하고 실측 `tp2/layers.csv`와 비교했다.
+
+**방법**: 루프라인 모델 (compute-bound → ×0.5, memory-bound → ×1.0)
+
+**이상치 처리**: `tp2/` 프로파일에서 `input=1` 행의 `down_proj`(2,528ns vs 예상 ~89,000ns), `lm_head`(10,624ns vs 예상 ~750,000ns), `o_proj` 누락이 측정 아티팩트로 확인됨. Z-score>3 기준 4개 행 자동 제거.
+
+| 그룹 | MAPE |
+|------|------|
+| 전체 | **8.2% ✓ PASS** (threshold 15%) |
+| memory-bound (layernorm/embedding/rope) | 2.5% |
+| compute-bound (FFN/attention proj) | 12.8% |
+
+실측 tp1→tp2 스케일링 비율 (input≥2 기하평균):
+
+| 레이어 | 실측 비율 | 이상적 비율 | 차이 |
+|--------|---------|-----------|------|
+| gate_proj, up_proj, down_proj | 0.510~0.517 | 0.5 | +2~3% |
+| lm_head | 0.502 | 0.5 | +0.4% |
+| o_proj | 0.547 | 0.5 | +9.5% |
+| q_proj | 0.617 | 0.5 | +23% ← GQA |
+| v_proj | 0.731 | 0.5 | +46% ← GQA KV head |
+| k_proj | 0.758 | 0.5 | +52% ← GQA KV head |
+| memory-bound 레이어 | 0.963~1.005 | 1.0 | ≤4% |
+
+**결론**: MAPE 8.2% < 15% → **TP=4 외삽 진행 가능**  
+k_proj/v_proj 오차(30~34%)는 GQA로 인해 KV head 수가 TP에 비례해 적어져 이상적 0.5x보다 높은 비율 발생. FFN 레이어는 이상적 스케일링에 매우 근접.
+
+### 9.2 TP=4 레이턴시 합성 방법
+
+**`validation/synthesize_tp.py`** 구현 (`--src-tp 1 --ref-tp 2 --target-tp 4 --write`):
+
+1. **layers.csv**: tp1→tp2 실측 비율을 레이어별로 학습(이상치 제거 후 기하평균), 로그 공간 선형 외삽으로 tp2→tp4 적용
+2. **attention predictions**: tp1→tp2 prefill(geo mean ratio=0.613), decode(0.552) 비율 동일 외삽
+3. **pkl 파일**: 시뮬레이터 첫 실행 시 CSV에서 자동 생성
+
+생성 파일:
+- `llm_profile/perf_models/A5000/meta-llama/Llama-3.1-8B/tp4/layers.csv` (합성)
+- `tp4/predictions/attn_prefill_predictions.csv` (135,168행)
+- `tp4/predictions/attn_decode_predictions.csv` (8,448행)
+
+### 9.3 TP=4 시뮬레이션 결과
+
+**Cluster config**: `a5000_4gpu_tp4_synth.json` (`npu_num=4, npu_group=1`)  
+**Dataset**: `sharegpt_req100_rate10_llama.jsonl` (TP=1/2와 동일 조건)
+
+#### TP 스케일링 비교 (시뮬레이터)
+
+| 메트릭 | TP=1 | TP=2 | TP=4 (합성) | TP=1→2 비율 | TP=2→4 비율 |
+|--------|------|------|------------|------------|------------|
+| Mean TTFT (ms) | 45.61 | 32.40 | 22.60 | 0.710x | 0.698x |
+| Median TTFT (ms) | 45.38 | 32.26 | 19.51 | 0.710x | 0.605x |
+| P99 TTFT (ms) | 65.13 | 57.45 | 49.85 | 0.882x | 0.868x |
+| Mean TPOT (ms) | 30.88 | 18.18 | 11.25 | 0.589x | 0.619x |
+| Median TPOT (ms) | 30.97 | 18.36 | 11.35 | 0.593x | 0.618x |
+| P99 TPOT (ms) | 32.31 | 19.00 | 12.13 | 0.588x | 0.638x |
+| Mean ITL (ms) | 30.67 | 18.02 | 11.16 | 0.587x | 0.619x |
+
+#### 관측 특성
+
+- **TPOT 스케일링 일관성**: TP=1→2(0.589x)와 TP=2→4(0.619x) 비율이 유사 → 로그-선형 외삽 가정 타당
+- **TTFT 스케일링**: TPOT보다 완만(~0.70x) — prefill 시 큐잉 지연이 포함되어 순수 compute 단축 효과 희석
+- **NPU당 메모리**: ~3,947 MB / 24 GB (16%) — TP=4에서 모델 가중치가 4분의 1로 분산
+- **예측 한계**: TP=4는 학습범위(TP=1,2) 밖 외삽; NVLink 미노출 환경에서 PCIe Gen4 통신 가정이 보수적
+
+### 9.4 TP=4 신뢰도 평가
+
+| 항목 | 평가 |
+|------|------|
+| compute latency 합성 | ✓ 역검증 MAPE 8.2% (PASS) |
+| attention latency 합성 | △ 역검증 미실시 (구조상 동일 방법 적용) |
+| ALL-REDUCE 통신 | ✓ ASTRA-Sim 해석 백엔드가 직접 모델링 |
+| 스케일링 일관성 | ✓ TPOT 비율이 TP=1→2와 TP=2→4에서 ±3%p 이내 |
+| 절대 정확도 | ✗ A5000 4장 실측 없어 직접 검증 불가 |
+
+**결론**: TP=4 시뮬레이션 결과는 *상대적 TP 스케일링 추세 분석*에 사용 가능. 절대 성능 수치는 ±15% 오차 범위로 해석 권장. A5000 4장 확보 시 `tp4/layers.csv`를 실측 프로파일로 교체하면 정확도 즉시 개선.

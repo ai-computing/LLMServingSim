@@ -24,7 +24,7 @@ SIM_ENV = {
     "PATH": os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", ""),
 }
 
-CONFIG_TIMEOUT_S = 120  # kill a config run after 1 min
+CONFIG_TIMEOUT_S = 600  # kill a config run after 10 min
 
 # Dynamic concurrency tuning
 MEM_PER_SIM_GB = 2.0   # estimated RAM per simulation subprocess

@@ -11,9 +11,10 @@
         await loadDatasets();
         await loadHistory();
         await loadConcurrency();
-        // Seed one resource pool row
+        // Seed one resource pool row and sync model dropdown
         addHwRow();
-        document.getElementById('btn-add-hw').addEventListener('click', () => addHwRow());
+        updateModelDropdown();
+        document.getElementById('btn-add-hw').addEventListener('click', () => { addHwRow(); updateModelDropdown(); });
         document.getElementById('btn-dry-run').addEventListener('click', dryRun);
         document.getElementById('btn-start').addEventListener('click', startJob);
         document.getElementById('history-select').addEventListener('change', () => {
@@ -27,14 +28,39 @@
     async function loadCatalog() {
         const r = await fetch('/api/dse/catalog');
         catalog = await r.json();
-        // Populate model dropdown with intersect of catalog availability
+        // Initial model dropdown will be set by updateModelDropdown() after addHwRow()
+    }
+
+    function updateModelDropdown() {
+        if (!catalog) return;
         const sel = document.getElementById('model-select');
-        const models = Object.keys(catalog.models);
-        for (const m of models) {
+        const saved = sel.value;
+
+        // Collect hardware types currently in the resource pool
+        const selectedHws = [...document.querySelectorAll('#resource-pool-body select')].map(s => s.value);
+
+        // Compute intersection of available models for all selected hardware
+        let compatible = null;
+        for (const hw of selectedHws) {
+            const hwModels = new Set(Object.keys(catalog.hardware[hw]?.available_models || {}));
+            if (compatible === null) {
+                compatible = hwModels;
+            } else {
+                compatible = new Set([...compatible].filter(m => hwModels.has(m)));
+            }
+        }
+        // Fall back to all catalog models if no hardware selected or intersection is empty
+        const allModels = Object.keys(catalog.models);
+        const show = (compatible && compatible.size > 0) ? [...compatible] : allModels;
+
+        sel.innerHTML = '';
+        for (const m of show) {
             const opt = document.createElement('option');
             opt.value = m; opt.textContent = m;
             sel.appendChild(opt);
         }
+        // Restore prior selection if still compatible, else pick first available
+        sel.value = (saved && show.includes(saved)) ? saved : (show[0] || '');
     }
 
     async function loadDatasets() {
@@ -114,7 +140,8 @@
             totalMaxEl.value = '';
         }
 
-        // 2. Model & Workload
+        // 2. Model & Workload — refresh dropdown first so the restored model is valid
+        updateModelDropdown();
         if (spec.model?.name) {
             document.getElementById('model-select').value = spec.model.name;
         }
@@ -193,12 +220,13 @@
             select.appendChild(opt);
         }
         if (hwValue != null) select.value = hwValue;
+        select.addEventListener('change', updateModelDropdown);
         const minI = mkInput('number', minValue != null ? String(minValue) : '0', 0);
         const maxI = mkInput('number', maxValue != null ? String(maxValue) : '2', 0);
         const rm = document.createElement('button');
         rm.type = 'button'; rm.textContent = '✕';
         rm.className = 'btn-secondary'; rm.style.padding = '4px 10px';
-        rm.addEventListener('click', () => tr.remove());
+        rm.addEventListener('click', () => { tr.remove(); updateModelDropdown(); });
 
         tr.appendChild(td(select));
         tr.appendChild(td(minI));
@@ -296,10 +324,15 @@
             }
             const unique = j.estimated_candidates;
             const sim = j.simulated_candidates ?? Math.min(unique, spec.search.max_combinations);
-            status.textContent = sim < unique
-                ? `≈ ${unique} candidates found → ${sim} will be simulated (sampled, cap=${spec.search.max_combinations})`
-                : `≈ ${sim} candidates will be simulated (all found)`;
-            renderDryRunList(j.candidates || [], unique, sim);
+            if (unique === 0) {
+                status.textContent = '⚠️ 0 candidates — the selected model may exceed GPU memory, or no TP profile exists for this hardware+model combination.';
+                document.getElementById('dry-run-results').style.display = 'none';
+            } else {
+                status.textContent = sim < unique
+                    ? `≈ ${unique} candidates found → ${sim} will be simulated (sampled, cap=${spec.search.max_combinations})`
+                    : `≈ ${sim} candidates will be simulated (all found)`;
+                renderDryRunList(j.candidates || [], unique, sim);
+            }
         } catch (e) {
             status.textContent = '❌ ' + e.message;
             document.getElementById('dry-run-results').style.display = 'none';

@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import signal
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -148,29 +149,27 @@ async def _update_sweep_state(
 def _cleanup_pid_artifacts(pid: int) -> None:
     """Remove ASTRA-Sim trace/workload files left by a finished main.py PID.
 
-    trace_generator.py / utils.py namespace per-process artifacts under
-    `pidNNNN_` to avoid concurrent-write races (see utils.py:PID_TAG). This
-    runs after each per-config subprocess exits so the shared
-    `astra-sim/inputs/{trace,workload}/` dirs don't accumulate stale files
-    across many sweeps. Best-effort: errors are swallowed since the run
-    has already completed and partial cleanup is harmless.
+    Uses `find -exec rm -rf` instead of Python rglob to avoid scanning
+    millions of accumulated files (rglob on a large inputs/ tree can take
+    hours and blocks the asyncio ThreadPoolExecutor indefinitely).
+    Best-effort: errors are swallowed.
     """
-    tag = f"pid{pid}_"
     astra_inputs = REPO_ROOT / "astra-sim" / "inputs"
-    for sub in ("trace", "workload", "network", "system", "memory"):
-        root = astra_inputs / sub
-        if not root.is_dir():
-            continue
-        # rglob walks all depths; covers trace/{hw}/{model}/pidN_*.txt,
-        # trace/pidN_event_handler.txt, workload/{hw}/{model}/pidN_*/...
-        for path in root.rglob(f"{tag}*"):
-            try:
-                if path.is_file() or path.is_symlink():
-                    path.unlink()
-                elif path.is_dir():
-                    shutil.rmtree(path, ignore_errors=True)
-            except OSError:
-                pass
+    if not astra_inputs.is_dir():
+        return
+    try:
+        subprocess.run(
+            [
+                "find", str(astra_inputs),
+                "-maxdepth", "8",
+                "-name", f"pid{pid}_*",
+                "-exec", "rm", "-rf", "{}", "+",
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+    except Exception:
+        pass
 
 
 async def _run_one_config_inner(
@@ -308,11 +307,13 @@ async def _run_one_config_inner(
         log_file.close()
         _running_procs.get(sweep_id, {}).pop(label, None)
         # Subprocess is finished — sweep up its PID-tagged trace/workload
-        # files. Offload to a thread because rglob+unlink across hundreds
-        # of files can block the event loop for tens of ms; with high
-        # MAX_CONCURRENT that accumulates and triggers spurious timeouts.
+        # files. Offload to a thread and cap at 30 s so a large inputs/ tree
+        # can never block state transition indefinitely.
         try:
-            await asyncio.to_thread(_cleanup_pid_artifacts, proc.pid)
+            await asyncio.wait_for(
+                asyncio.to_thread(_cleanup_pid_artifacts, proc.pid),
+                timeout=30.0,
+            )
         except Exception:
             pass  # cleanup failure must not block state transition
 
