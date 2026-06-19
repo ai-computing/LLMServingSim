@@ -266,3 +266,90 @@ Corrected absolute numbers (sim / vLLM):
    closer than the buggy data (e.g. TP2 −83% → −39%).
 
 Old buggy-data sim results preserved as `sim_a40_tp{1,2,4}_buggy_results.csv`.
+
+---
+
+## Llama-3.1-70B TP=4 — simulation (cross-hardware)
+
+vLLM 70B was **not run here** (no local 70B weights; 141 GB HF download throttled, and serving
+needs 4 GPUs loaded). Instead the 70B TP=4 sim is compared across hardware using the repo's
+*measured* 70B tp4 profiles (A40 measured this session via cuda_event; A100/H100 from the repo).
+Same workload (sharegpt 300 req). link_bw/power: A40 measured (PCIe 24.5 GB/s); A100/H100 from
+datasheet (NVLink ~300/450 GB/s, TDP 400/700 W) — estimates, flagged.
+
+| HW | makespan | gen tput (tok/s) | TTFT p50 | TPOT p50 | NPU power (4 GPU) | node energy | efficiency |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| A40  | 146.7 s | 568  | 423 ms | 194 ms | 1019 W | 187.8 kJ | 444 tok/kJ |
+| A100 | 57.6 s  | 1446 | 68 ms  | 44 ms  | 1545 W | 104.6 kJ | 797 tok/kJ |
+| H100 | 45.9 s  | 1812 | 45 ms  | 28 ms  | 2717 W | 137.3 kJ | 607 tok/kJ |
+
+Throughput: A100 = 2.5× A40, H100 = 3.2× A40.
+
+### Model scaling on A40 TP=4 (8B vs 70B)
+
+| | makespan | TPOT p50 |
+|---|---:|---:|
+| 8B  | 55.8 s  | 40.3 ms |
+| 70B | 146.7 s | 194.3 ms |
+
+70B is ~2.6× slower makespan / ~4.8× higher per-token latency than 8B at TP=4 (≈8.8× params, but
+TP=4 sharding + memory-bound decode compress it to ~5×).
+
+### Findings
+1. **A40 runs 70B TP=4 but is throughput/latency-limited**: 568 tok/s, TPOT 194 ms — usable for
+   batch/offline but far from interactive SLOs. A100/H100 are 2.5–3.2× faster.
+2. **A100 is the most energy-efficient** for 70B here (797 tok/kJ) — H100 is fastest but its 700 W
+   TDP makes it less efficient per token than A100 (607 tok/kJ); A40 is least efficient (444).
+3. **Caveat**: A40 numbers rest on measured profiles + this-session vLLM-validated 8B accuracy;
+   A100/H100 link_bw/power are datasheet estimates, and 70B has no direct vLLM validation here.
+   Treat cross-hardware as a *prediction* (relative ordering robust; absolute power approximate).
+
+Artifacts: `sim_{a40,a100,h100}_tp4_70b_*`, `cluster_config/{a40,a100,h100}_4gpu_tp4_70b.json`.
+
+---
+
+## TP=8 extrapolation validity study (8B, 8× A40)
+
+Goal: assess whether `extrapolate_tp_profile.py` produces usable tp8 profiles. Three-way check:
+extrapolated tp8 vs directly-measured tp8 (cuda_event, logical TP on 1 GPU) vs real 8-GPU vLLM.
+link_bw = 21 GB/s (measured cross-NUMA GPU0↔GPU4, the TP8 all-reduce bottleneck; GPU0-3 and
+GPU4-7 sit on different NUMA nodes joined by SYS).
+
+### Level 1 — extrapolation accuracy (extrapolated vs measured)
+Per-layer latency MAE = **30%** (median 26%): the geometric tp1→tp2 ratio over-shrinks compute
+layers that hit a kernel-launch floor at tp8 (act_fn −88%, down/up/o_proj −48..−54%), while
+memory-bound layers are over-kept. Errors partially cancel → **layer-sum error −12.7%**, and the
+end-to-end sim impact is **+10% gen / −18% TPOT / −9% makespan** (extrapolated vs measured-profile
+sim). So the extrapolation is an acceptable *aggregate* approximation, but per-layer accuracy is
+much worse than the large-model case (H100/70B tp4 ≈ 5%) — extrapolation degrades for
+small-model × high-TP.
+
+### Level 2 — sim vs reality (the dominant error at TP=8)
+
+| metric | sim (extrap) | sim (measured) | vLLM (real) |
+|---|---:|---:|---:|
+| gen tput (tok/s) | 1570 | 1422 | **690** |
+| TTFT p50 (ms) | 62 | 74 | **18832** |
+| TPOT p50 (ms) | 37.7 | 46.0 | **252.5** |
+| GPU power (8 GPU, W) | 2128 | 2153 | **892** |
+
+sim(measured) vs vLLM: gen **+106%**, TPOT **−82%**. **Both** sim variants are wildly off — TP=8
+on an 8B model *collapses* in reality (690 tok/s, below even TP1's 1374; 18.8 s TTFT) because the
+8-way all-reduce over the cross-NUMA SYS link dominates, leaving the GPUs comm-stalled (~111 W
+each, vs sim's flat ~265 W → power +140%). The simulator's single-`link_bw` FullyConnected
+collective model cannot represent the hierarchical NVLink-pair / PCIe / cross-NUMA topology or
+NCCL sync overhead, so it predicts TP=8 is fine.
+
+### Conclusion
+- **Extrapolation is valid on the compute side** (~±10–18% end-to-end vs measured profiles); good
+  for large models / moderate TP, weaker (per-layer ~30%) for small-model × high-TP.
+- **But at TP=8 the limiting error is the simulator's collective-communication model, not the
+  profile extrapolation** — neither extrapolated nor measured profiles let the sim reproduce
+  vLLM's TP=8 throughput/latency collapse. Improving high-TP fidelity needs a hierarchical
+  interconnect + collective-overhead model, not better profiles.
+- Practical guidance: trust sim (with measured or extrapolated profiles) up to TP that stays
+  on fast intra-node links (here TP≤2 NVLink, TP4 mixed was already +35% power off); treat
+  cross-NUMA high-TP predictions as unreliable.
+
+Artifacts: `sim_a40_tp8_{extrap,measured}_*`, `vllm_a40_tp8_*`, `compare_tp8.py`,
+`cluster_config/{a40,a40x}_8gpu_tp8.json`; extrapolated profile preserved under perf_models/A40x.
