@@ -1,0 +1,7 @@
+metric,vllm,sim,delta_pct
+ttft_p50_ms,110.95,17.51,-84.2
+ttft_p99_ms,1713.16,35.03,-98.0
+tpot_p50_ms,31.81,10.54,-66.9
+tpot_p99_ms,42.62,11.44,-73.2
+throughput_gen_tok_s,1864.4,2201.96,18.1
+gpu_power_w_total,577.5,576.0,-0.3
