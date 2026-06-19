@@ -227,3 +227,42 @@ vLLM `--tensor-parallel-size 4` on GPU0-3.
 Artifacts: `sim_a40_tp4_*`, `vllm_tp4_results.jsonl`, `vllm_a40_tp4_power.csv`,
 `compare_a40_tp4_summary.csv`. Extrapolation inputs: repaired `tp2/layers.csv`
 (`.corrupted.bak` = original), extrapolated `tp4/` (`.fromcorrupted.bak` = pre-repair).
+
+---
+
+## Re-comparison with corrected (cuda_event) profiles
+
+The original TP1/2/4 comparisons above used profiles measured with the buggy default
+`record_function` method, which under-measured **both** layer GEMMs (gate/up/lm_head collapse)
+**and** attention — prefill ×1.45, **decode ×6.65**. After re-profiling with `--profile-method
+cuda_event` (root-cause fix; see "Profiler bug" section) and re-running the sims:
+
+| Metric (sim vs vLLM Δ) | TP1 buggy → corrected | TP2 buggy → corrected | TP4 buggy → corrected |
+|---|---|---|---|
+| **TPOT p50** | −57% → **−30%** | −66% → **+38%** | −70% → **−3%** |
+| **Throughput (gen)** | +13% → −13% | +18% → −26% | +17% → −22% |
+| **TTFT p50** | −86% → −76% | −83% → −39% | −86% → −56% |
+| **GPU power** | +0.8% → +0.8% | −0.3% → +1.3% | +29% → +35% |
+
+Corrected absolute numbers (sim / vLLM):
+
+| | TTFT p50 (ms) | TPOT p50 (ms) | gen tput (tok/s) | GPU power (W) |
+|---|---|---|---|---|
+| TP1 | 84.9 / 348.2 | 54.8 / 77.9 | 1194.8 / 1373.6 | 299.8 / 297.4 |
+| TP2 | 67.7 / 111.0 | 43.8 / 31.8 | 1374.4 / 1864.4 | 585.1 / 577.5 |
+| TP4 | 67.8 / 153.9 | 40.3 / 41.5 | 1491.0 / 1904.0 | 1103.6 / 819.8 |
+
+### Findings
+1. **TPOT optimism was a profiler artifact, not a model limitation.** Fixing decode-attention
+   (×6.65 under-measurement) moved TPOT from −57…−70% to within ±3–38% — TP4 is now essentially
+   exact (−3%). The simulator's per-token decode model is accurate once fed correct attention data.
+2. **Throughput sign flipped** (+13…18% → −13…−26%): heavier corrected compute makes the sim now
+   mildly *conservative* rather than optimistic. The sim also shows weaker TP scaling than vLLM
+   (sim 1195→1374→1491 vs vLLM 1374→1864→1904) — vLLM's continuous batching extracts more
+   throughput than the sim's batching model captures.
+3. **Power: TP1/TP2 remain excellent (<1.5%)**; TP4 still over (+35%) due to the flat
+   `active_power` power-model limitation (independent of the profiler bug).
+4. **TTFT** still lower (definitional: sim = compute-complete, no queue/scheduling) but markedly
+   closer than the buggy data (e.g. TP2 −83% → −39%).
+
+Old buggy-data sim results preserved as `sim_a40_tp{1,2,4}_buggy_results.csv`.
