@@ -379,7 +379,7 @@ class LlamaModel(LlamaPreTrainedModel):
         self._embedding_timer = Timer(name="embedding")
         self._final_layernorm_timer = Timer(name="final_layernorm")
 
-    @check_model_inputs
+    @check_model_inputs()
     @auto_docstring
     def forward(
         self,

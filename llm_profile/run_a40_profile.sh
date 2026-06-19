@@ -1,0 +1,38 @@
+#!/bin/bash
+# In-container orchestration for A40 / Llama-3.1-8B profiling (TP 1,2).
+# Invoked inside nvcr.io/nvidia/pytorch:25.01-py3 with /workspace = llm_profile.
+set -euo pipefail
+
+HARDWARE="A40"
+MODEL="meta-llama/Llama-3.1-8B"
+TP="1, 2"
+
+echo "==> Installing deps (transformers 4.57.3)"
+pip install -q -U pip setuptools wheel packaging transformers==4.57.3 scikit-learn
+
+# Pick up HF token from mounted cache (file). HF_TOKEN takes precedence in hf_hub.
+if [ -s /root/.cache/huggingface/token ]; then
+  TOK="$(cat /root/.cache/huggingface/token)"
+  export HF_TOKEN="$TOK"
+  export HUGGING_FACE_HUB_TOKEN="$TOK"
+fi
+
+echo "==> [1/3] Layer latency profiling (tp=$TP)"
+CUDA_VISIBLE_DEVICES=0 python3 -m profiler.layers.main \
+  --hardware "$HARDWARE" --model "$MODEL" \
+  --num-layers 1 --tp-size "$TP" \
+  --warmup 10 --repeat 30 --max-len 10 --device cuda
+
+echo "==> [2/3] Attention latency profiling (tp=$TP)"
+CUDA_VISIBLE_DEVICES=0 python3 -m profiler.attention.main \
+  --hardware "$HARDWARE" --model "$MODEL" \
+  --max-len 2048 --tp-size "$TP" \
+  --warmup 10 --repeat 50 --device cuda
+
+echo "==> [3/3] Building attention predictor (tp=$TP)"
+python3 -m profiler.predictor.main \
+  --model "$MODEL" --hardware "$HARDWARE" \
+  --tp-size "$TP" --kv-granularity 64 --chunk-granularity 32 \
+  --max-len 2048 --max-batch 256
+
+echo "==> DONE. Outputs under perf_models/$HARDWARE/$MODEL/"
