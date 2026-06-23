@@ -395,7 +395,8 @@ def build_cluster_config(astra_sim, cluster_config_path, enable_local_offloading
         effective_num_instances = total_num_instances + len(prefill_instance)
 
         # create network config file
-        _create_network_config(network_config_path, total_npu, total_npu_group, effective_num_instances, link_bw, link_latency)
+        tp_group_shape = cluster_config.get("tp_group_shape")
+        _create_network_config(network_config_path, total_npu, total_npu_group, effective_num_instances, link_bw, link_latency, tp_group_shape=tp_group_shape)
 
         # generate memory config file
         with open(memory_config_path, "w", encoding="utf-8") as f:
@@ -430,8 +431,8 @@ def build_cluster_config(astra_sim, cluster_config_path, enable_local_offloading
     return cluster
 
 # generates topology according to the input arguments
-def _create_network_config(netwok_config_path, npu_nums, npu_group, num_instances, link_bw, link_latency):
-    
+def _create_network_config(netwok_config_path, npu_nums, npu_group, num_instances, link_bw, link_latency, tp_group_shape=None):
+
     if npu_nums == npu_group:
         # full pipeline parallelism, one dimension for each instance is sufficient
         npus_per_group = npu_nums//num_instances
@@ -439,11 +440,42 @@ def _create_network_config(netwok_config_path, npu_nums, npu_group, num_instance
     else:
         npus_per_group = npu_nums//npu_group
 
+    # Decompose the tensor-parallel group into hierarchical interconnect tiers,
+    # ordered innermost (fastest) first. e.g. tp_group_shape=[2, 2] -> NVLink pair
+    # (dim0) + intra-node PCIe bridge (dim1); [2, 2, 2] -> NVLink + PCIe + cross-socket.
+    # When omitted, the TP group is a single flat FullyConnected dim (legacy behaviour).
+    if tp_group_shape:
+        from math import prod
+        if prod(tp_group_shape) != npus_per_group:
+            raise ValueError(
+                f"tp_group_shape {tp_group_shape} (product {prod(tp_group_shape)}) "
+                f"must equal npus_per_group ({npus_per_group})")
+        dims = [int(x) for x in tp_group_shape]
+    else:
+        dims = [npus_per_group]
+
+    # Outermost dimension isolates instances/replicas (data-parallel or pipeline).
+    # TP collectives span only the tp_group_shape dims above; this dim separates them.
+    if npu_group > 1:
+        dims.append(npu_group)
+
+    n_dim = len(dims)
+
+    # link_bw / link_latency may be a scalar (uniform, replicated across all dims) or a
+    # per-dimension list ordered innermost-first, e.g. [BW_NVLink, BW_PCIe, BW_SYS].
+    def _per_dim(value):
+        if isinstance(value, (list, tuple)):
+            vals = [float(v) for v in value]
+            if len(vals) < n_dim:
+                vals = vals + [vals[-1]] * (n_dim - len(vals))  # pad with last tier
+            return vals[:n_dim]
+        return [float(value)] * n_dim
+
     topology_data = {
-        "topology": FlowStyleList(["FullyConnected"] * 2 if npu_group > 1 else ["FullyConnected"]),
-        "npus_count": FlowStyleList([npus_per_group, npu_group] if npu_group > 1 else [npus_per_group]),
-        "bandwidth": FlowStyleList([float(link_bw)] * 2 if npu_group > 1 else [float(link_bw)]),
-        "latency": FlowStyleList([float(link_latency)] * 2 if npu_group > 1 else [float(link_latency)]),
+        "topology": FlowStyleList(["FullyConnected"] * n_dim),
+        "npus_count": FlowStyleList(dims),
+        "bandwidth": FlowStyleList(_per_dim(link_bw)),
+        "latency": FlowStyleList(_per_dim(link_latency)),
     }
 
     with open(netwok_config_path, 'w') as yaml_file:
