@@ -45,13 +45,14 @@ def _resolve_npu_mem(hardware: str, override: dict) -> dict:
 def build_cluster_json(
     spec: ConfigSpec,
     cpu_mem: dict,
-    link_bw: int,
-    link_latency: int,
+    link_bw,
+    link_latency,
     *,
     num_nodes: int = 1,
     cpu_mem_per_node: "list[dict] | None" = None,
     instances_per_node: "list[list[InstanceSpec]] | None" = None,
     power_template: "dict | None" = None,
+    tp_group_shape: "list[int] | None" = None,
 ) -> dict:
     """Produce a cluster JSON dict accepted by config_builder.py.
 
@@ -61,6 +62,11 @@ def build_cluster_json(
     cluster config), it is attached to every generated node so the simulator
     enables power modeling. Each node gets its own deep copy because
     config_builder.py mutates power["npu"][hw]["num_npus"] in place.
+
+    link_bw / link_latency may be a scalar (uniform) or a per-dimension list
+    ordered innermost-first; the latter pairs with tp_group_shape to drive the
+    hierarchical topology in config_builder._create_network_config. When
+    tp_group_shape is given it is written to the top level of the cluster JSON.
     """
     if instances_per_node is None:
         nodes_instances: list[list[InstanceSpec]] = [spec.instances]
@@ -99,12 +105,15 @@ def build_cluster_json(
             node_json["power"] = copy.deepcopy(power_template)
         nodes_json.append(node_json)
 
-    return {
+    cluster: dict = {
         "num_nodes":    num_nodes,
         "link_bw":      link_bw,
         "link_latency": link_latency,
         "nodes": nodes_json,
     }
+    if tp_group_shape:
+        cluster["tp_group_shape"] = list(tp_group_shape)
+    return cluster
 
 
 def validate_spec(

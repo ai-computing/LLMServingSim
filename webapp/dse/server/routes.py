@@ -211,7 +211,7 @@ async def api_catalog() -> JSONResponse:
     hw_meta = metadata.get("hardware", {})
     model_meta = metadata.get("models", {})
 
-    out: dict[str, Any] = {"hardware": {}, "models": {}}
+    out: dict[str, Any] = {"hardware": {}, "models": {}, "fabrics": {}}
     for hw in list_hardware(catalog):
         out["hardware"][hw] = {
             **hw_meta.get(hw, {}),
@@ -223,6 +223,9 @@ async def api_catalog() -> JSONResponse:
         }
     for model_name, meta in model_meta.items():
         out["models"][model_name] = meta
+
+    from ..core.interconnect import load_fabrics
+    out["fabrics"] = load_fabrics()
     return JSONResponse(out)
 
 

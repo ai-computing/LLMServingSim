@@ -115,6 +115,9 @@ class JobSpec(BaseModel):
     resource_pool: ResourcePool
     model: ModelSpec
     workload: WorkloadSpec
+    fabric: Optional[str] = Field(None,
+        description="Interconnect fabric preset name (docs/dse/fabrics.yaml). "
+                    "None → per-hardware catalog interconnect_bw_gbs scalar fallback.")
     constraints: Constraints = Field(default_factory=Constraints)
     features: FeatureFlags = Field(default_factory=FeatureFlags)
     search: SearchConfig = Field(default_factory=SearchConfig)

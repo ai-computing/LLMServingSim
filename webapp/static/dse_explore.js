@@ -28,7 +28,36 @@
     async function loadCatalog() {
         const r = await fetch('/api/dse/catalog');
         catalog = await r.json();
+        populateFabrics();
         // Initial model dropdown will be set by updateModelDropdown() after addHwRow()
+    }
+
+    function populateFabrics() {
+        const sel = document.getElementById('fabric-select');
+        if (!sel) return;
+        const saved = sel.value;
+        sel.innerHTML = '';
+        const def = document.createElement('option');
+        def.value = ''; def.textContent = 'Catalog default (per-HW)';
+        sel.appendChild(def);
+        for (const [name, f] of Object.entries(catalog.fabrics || {})) {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            opt.dataset.desc = (f && f.description) || '';
+            sel.appendChild(opt);
+        }
+        sel.value = saved || '';
+        sel.addEventListener('change', updateFabricDesc);
+        updateFabricDesc();
+    }
+
+    function updateFabricDesc() {
+        const sel = document.getElementById('fabric-select');
+        const desc = document.getElementById('fabric-desc');
+        if (!sel || !desc) return;
+        const opt = sel.options[sel.selectedIndex];
+        desc.textContent = (opt && opt.dataset.desc) || '';
     }
 
     function updateModelDropdown() {
@@ -147,6 +176,11 @@
         }
         if (spec.model?.fp != null) {
             document.getElementById('fp-select').value = String(spec.model.fp);
+        }
+        const fabricSel = document.getElementById('fabric-select');
+        if (fabricSel) {
+            fabricSel.value = spec.fabric || '';
+            updateFabricDesc();
         }
         if (spec.workload?.dataset) {
             document.getElementById('dataset-select').value = spec.workload.dataset;
@@ -283,6 +317,7 @@
                 name: document.getElementById('model-select').value,
                 fp: parseInt(document.getElementById('fp-select').value, 10),
             },
+            fabric: document.getElementById('fabric-select').value || null,
             workload: {
                 dataset: document.getElementById('dataset-select').value,
                 num_req: parseInt(document.getElementById('num-req').value, 10) || 100,

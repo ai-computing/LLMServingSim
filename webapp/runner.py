@@ -505,12 +505,20 @@ async def run_sweep(
     # had a `power` block, the JS captures it and forwards it here. Applied
     # uniformly to every generated node so each variant runs power simulation.
     power_template = workload.get("power_template") or None
+    # Optional per-candidate interconnect overrides (DSE fabric / catalog
+    # fallback). Keyed by spec.label → {link_bw, link_latency, tp_group_shape}.
+    # Absent label → uniform link_bw/link_latency (legacy webapp sweep path).
+    interconnect_by_label = workload.get("interconnect_by_label") or {}
 
     config_paths: dict[str, Path] = {}
     for spec in configs:
+        ic = interconnect_by_label.get(spec.label) or {}
         cluster_json = build_cluster_json(
-            spec, cpu_mem, link_bw, link_latency,
+            spec, cpu_mem,
+            ic.get("link_bw", link_bw),
+            ic.get("link_latency", link_latency),
             power_template=power_template,
+            tp_group_shape=ic.get("tp_group_shape"),
         )
         cfg_path = sweep_dir / "configs" / f"{spec.label}.json"
         cfg_path.write_text(json.dumps(cluster_json, indent=4))

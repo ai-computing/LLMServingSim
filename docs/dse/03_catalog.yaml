@@ -106,6 +106,19 @@ hardware:
     unit_cost_usd: 2500                    # workstation list ~ 추정
     interconnect_bw_gbs: 32               # PCIe 4.0 x16 단방향, NVLink 없음
 
+  A40:
+    family: "NVIDIA Ampere (datacenter / pro-viz)"
+    mem_size_gb: 45                        # 48 GB GDDR6 physical; 45 usable (a40 cluster config과 일치)
+    mem_bw_gbs: 696                        # GDDR6, 696 GB/s
+    mem_type: "GDDR6"
+    peak_flops_fp16_tflops: 149.7          # tensor core, sparsity disabled
+    tdp_w: 300
+    idle_power_w: 15                       # cluster_config/a40_8gpu_tp8_70b_3tier.json과 일치
+    standby_power_w: 18
+    standby_duration_s: 18
+    unit_cost_usd: 4500                    # datacenter/workstation list ~ 변동
+    interconnect_bw_gbs: 112              # NVLink bridge (2-way) ~112 GB/s aggregate. fabric 지정 시 그 값이 우선
+
 # ----------------------------------------------------------------------------
 
 models:
@@ -197,6 +210,10 @@ availability:
 
   A5000:
     "meta-llama/Llama-3.1-8B":           [1, 2, 4]
+
+  A40:
+    "meta-llama/Llama-3.1-8B":           [1, 2, 4, 8]
+    "meta-llama/Llama-3.1-70B":          [4, 8]
 
 # ----------------------------------------------------------------------------
 

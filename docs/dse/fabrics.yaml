@@ -1,0 +1,41 @@
+# 04 — DSE 상호연결망(fabric) 프리셋
+#
+# fabric = 하나의 "물리 박스"의 인터커넥트 토폴로지.
+# DSE는 후보의 TP 차수에 맞춰 이 티어들을 ASTRA-Sim의 hierarchical
+# tp_group_shape 로 자동 분해한다 (config_builder.py: _create_network_config).
+#
+# 구성 원칙:
+#   - tiers: 가장 안쪽(빠른) 계층부터 바깥(느린) 순서로 나열한다.
+#       size       : 이 계층이 묶는 NPU 수 (예: NVLink 쌍 = 2)
+#       bw_gbs     : 단방향 대역폭 (GB/s) — cluster_config link_bw 와 동일 단위
+#       latency_ns : 링크 지연 (ns). 보통 0
+#   - 모든 size 의 곱 = 박스 1대의 총 NPU 수.
+#   - TP=k 후보는 안쪽 티어부터 곱이 k 가 될 때까지 소비한다.
+#       예) tiers=[2,2,2] →  TP2: [2] / TP4: [2,2] / TP8: [2,2,2]
+#   - TP 차수가 티어로 깔끔히 분해되지 않으면(예: TP3) 가장 느린 티어
+#     대역폭을 스칼라로 사용하는 보수적 fallback 으로 내려간다.
+#
+# fabric 을 지정하지 않으면 DSE 는 03_catalog.yaml 의 hw 별
+# interconnect_bw_gbs (이종 구성은 최소값) 를 평면 스칼라로 사용한다.
+
+fabrics:
+
+  # 8×A40, 2-socket 워크스테이션. cluster_config/a40_8gpu_tp8_70b_3tier.json 과 동일.
+  a40_8gpu_2socket:
+    description: "8×A40 2-socket: NVLink pair / intra-NUMA PCIe / cross-socket QPI"
+    tiers:
+      - {name: nvlink, size: 2, bw_gbs: 52.8, latency_ns: 0}
+      - {name: pcie,   size: 2, bw_gbs: 24.5, latency_ns: 0}
+      - {name: qpi,    size: 2, bw_gbs: 21.0, latency_ns: 0}
+
+  # 8-GPU NVLink full mesh (예: A100/H100 SXM DGX 노드의 단일 NVLink 도메인).
+  nvlink_8gpu:
+    description: "8-GPU single NVLink domain (DGX-class SXM node)"
+    tiers:
+      - {name: nvlink, size: 8, bw_gbs: 600.0, latency_ns: 0}
+
+  # PCIe 전용 4-GPU 박스 (NVLink 없는 consumer/workstation).
+  pcie_4gpu:
+    description: "4-GPU PCIe-only box (no NVLink)"
+    tiers:
+      - {name: pcie, size: 4, bw_gbs: 32.0, latency_ns: 0}

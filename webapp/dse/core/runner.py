@@ -55,13 +55,26 @@ async def run_dse_job(
     # entries are harmless.
     from .config_builder import build_power_template_from_catalog
     from .generator import load_metadata
+    from .interconnect import load_fabrics, resolve_interconnect
+    metadata = load_metadata()
+    hw_meta = metadata["hardware"]
     union_hw: dict[str, int] = {}
     for c in candidates:
         for hw, cnt in c.hw_distribution.items():
             union_hw[hw] = union_hw.get(hw, 0) + cnt
     power_template = build_power_template_from_catalog(
-        union_hw, load_metadata()["hardware"], enable_power=True,
+        union_hw, hw_meta, enable_power=True,
     )
+
+    # Per-candidate interconnect: fabric preset (if spec.fabric set) else the
+    # per-hardware catalog interconnect_bw_gbs scalar. Shared dict object — the
+    # retry loop appends to it and run_sweep re-reads it each merge round.
+    fabric_def = load_fabrics().get(spec.fabric) if spec.fabric else None
+    interconnect_by_label: dict[str, dict] = {}
+    for c in candidates:
+        ic = resolve_interconnect(c.config_spec, fabric_def, hw_meta)
+        if ic:
+            interconnect_by_label[c.label] = ic
 
     workload = {
         "dataset":   spec.workload.dataset,
@@ -69,6 +82,7 @@ async def run_dse_job(
         "phase":     "full",
         "timeout_s": spec.workload.timeout_s,
         "power_template": power_template,
+        "interconnect_by_label": interconnect_by_label,
     }
 
     scenario_json = {
@@ -96,7 +110,6 @@ async def run_dse_job(
     # This continues up to _MAX_RETRY_ROUNDS or until no failures remain or
     # no untried candidates are left.
     catalog = build_catalog()
-    metadata = load_metadata()
     tried_labels: set[str] = {c.label for c in candidates}
     all_candidates: list[CandidateConfig] = list(candidates)
 
@@ -121,8 +134,12 @@ async def run_dse_job(
             break
 
         for cand in replacements:
+            ic = resolve_interconnect(cand.config_spec, fabric_def, hw_meta)
+            if ic:
+                interconnect_by_label[cand.label] = ic
             write_candidate_cluster_json(
-                cand, job_dir / "configs", metadata["hardware"], enable_power=True,
+                cand, job_dir / "configs", hw_meta, enable_power=True,
+                interconnect=ic or None,
             )
 
         all_candidates.extend(replacements)

@@ -63,22 +63,30 @@ def write_candidate_cluster_json(
     link_bw: int = LINK_BW_DEFAULT,
     link_latency: int = LINK_LATENCY_DEFAULT,
     cpu_mem: dict | None = None,
+    interconnect: dict | None = None,
 ) -> Path:
     """Build the cluster JSON for a single candidate and write to disk.
 
     Returns the path written. The DSE runner passes this path to main.py
     via --cluster-config.
+
+    `interconnect` (from interconnect.resolve_interconnect) overrides the flat
+    link_bw/link_latency with fabric- or catalog-derived values and may carry a
+    tp_group_shape for hierarchical topologies. When None, the flat defaults are
+    used (legacy behaviour).
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     power = build_power_template_from_catalog(
         candidate.hw_distribution, hw_meta, enable_power=enable_power,
     )
+    ic = interconnect or {}
     cluster_json = build_cluster_json(
         candidate.config_spec,
         cpu_mem=cpu_mem or CPU_MEM_DEFAULT,
-        link_bw=link_bw,
-        link_latency=link_latency,
+        link_bw=ic.get("link_bw", link_bw),
+        link_latency=ic.get("link_latency", link_latency),
         power_template=power,
+        tp_group_shape=ic.get("tp_group_shape"),
     )
     out_path = output_dir / f"{candidate.label}.json"
     out_path.write_text(json.dumps(cluster_json, indent=2))

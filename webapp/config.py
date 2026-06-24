@@ -63,11 +63,13 @@ SOFT_CAP = 20           # warn user if sweep exceeds this count
 # Default hardware memory specs -- used when building cluster JSONs
 # Read from cluster_config/single_node_*.json at startup; these are fallbacks
 HW_DEFAULTS = {
+    "A40":       {"mem_size": 45,  "mem_bw": 696,  "mem_latency": 0},
     "A6000":     {"mem_size": 40,  "mem_bw": 768,  "mem_latency": 0},
     "H100":      {"mem_size": 80,  "mem_bw": 3000, "mem_latency": 0},
     "RNGD":      {"mem_size": 40,  "mem_bw": 1500, "mem_latency": 0},
     "RTX3090":   {"mem_size": 24,  "mem_bw": 936,  "mem_latency": 0},
     "TPU-v6e-1": {"mem_size": 16,  "mem_bw": 1640, "mem_latency": 0},
+    "A5000":     {"mem_size": 24,  "mem_bw": 768,  "mem_latency": 0},
 }
 CPU_MEM_DEFAULT = {"mem_size": 128, "mem_bw": 256, "mem_latency": 0}
 LINK_BW_DEFAULT = 112
