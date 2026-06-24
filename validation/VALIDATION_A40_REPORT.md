@@ -415,3 +415,38 @@ Artifacts: `cluster_config/a40_8gpu_tp8_70b_3tier.json`, `docs/dse/fabrics.yaml`
 `output/{bench_tp8_70b_3tier,sim_a40_2socket_tp8_70b,sim_lowrate_ttft}.csv`,
 `validation/vllm_a40_tp8_lowrate_results.jsonl`, `dataset/sharegpt_lowrate_ttft15.jsonl`;
 measured tp8 profiles under `perf_models/A40/meta-llama/Llama-3.1-70B/tp8/`.
+
+### TP=4 control point (70B, 4× A40, intra-socket) — the error is the QPI hop, not TP itself
+
+Same comparison at TP=4 with the 2-tier fabric `[2,2]` = NVLink 52.8 / intra-NUMA PCIe 24.5
+(`cluster_config/a40_4gpu_tp4_70b_2tier.json`, GPUs 0–3 on NUMA node 0 — the all-reduce never
+crosses QPI). Saturated ShareGPT, 100 req. (vLLM generated ~7% fewer output tokens due to early
+EOS; rate-normalised metrics unaffected.)
+
+| metric | sim (2-tier) | vLLM (real) | sim error |
+|---|---:|---:|---:|
+| total throughput (tok/s) | 420.9 | 498.8 | **−16 % (pessimistic)** |
+| gen throughput (tok/s) | 221.4 | 253.4 | −13 % |
+| request throughput (req/s) | 0.95 | 1.17 | −19 % |
+| makespan (s) | 105.4 | 85.7 | +23 % |
+| TPOT p50 (ms) | 145.8 | 152.6 | **−4 % (nearly exact)** |
+| TTFT p50 (ms) | 252.2 | 3 553 | queueing (saturated) |
+
+**At TP=4 the simulator is accurate** (TPOT within 4 %, throughput within ~16 % and on the
+*conservative* side) — the opposite of TP=8's +103 % optimism. The error is not a function of TP
+degree but of whether the collective traverses the slow cross-socket QPI link.
+
+The cleanest evidence is that the sim **inverts the TP4↔TP8 ordering**:
+
+| throughput (tok/s) | TP4 | TP8 | verdict |
+|---|---:|---:|---|
+| simulator | 420.9 | 619.8 | predicts TP8 **faster** |
+| real vLLM | 498.8 | 305.8 | TP4 actually **1.6× faster** |
+
+On real A40 hardware TP=8 is *slower* than TP=4 because the 8-way all-reduce bottlenecks on
+cross-socket QPI (21 GB/s); the sim underestimates that sync cost and predicts the wrong winner.
+Consequence for calibration: **no single factor** — a correction is needed only for configs whose
+collective crosses QPI (≈1.0× for intra-socket TP≤4, ≈0.49× for cross-socket TP8 on this box).
+
+Artifacts: `cluster_config/a40_4gpu_tp4_70b_2tier.json`, `output/sim_tp4_2tier.csv`,
+`validation/vllm_a40_tp4_70b_sharegpt100_results.jsonl`.
