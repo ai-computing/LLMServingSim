@@ -244,7 +244,7 @@ def main():
     last_log = 0    # last logged time
     FREQ = 1000_000_000 # 1 GHz (1e9 Hz)
     INTERVAL = log_interval*FREQ
-    RATIO = FREQ//INTERVAL
+    RATIO = FREQ/INTERVAL  # intervals per second; float so log_interval != 1.0 (e.g. 5.0) doesn't floor to 0
     total_prompt = 0
     total_gen = 0
     total_latency = 0

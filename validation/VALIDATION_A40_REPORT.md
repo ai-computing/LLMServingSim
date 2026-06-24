@@ -353,3 +353,65 @@ NCCL sync overhead, so it predicts TP=8 is fine.
 
 Artifacts: `sim_a40_tp8_{extrap,measured}_*`, `vllm_a40_tp8_*`, `compare_tp8.py`,
 `cluster_config/{a40,a40x}_8gpu_tp8.json`; extrapolated profile preserved under perf_models/A40x.
+
+## TP=8 with hierarchical 3-tier interconnect (70B, 8× A40) — calibration (2026-06-24)
+
+Follow-up to the TP=8 study above, which concluded high-TP fidelity needs *a hierarchical
+interconnect + collective-overhead model, not better profiles*. The hierarchical model now
+exists (`config_builder._create_network_config` + top-level `tp_group_shape`; fabric preset
+`a40_8gpu_2socket` = `cluster_config/a40_8gpu_tp8_70b_3tier.json`), with **measured** (not
+extrapolated) tp8 70B profiles and the 3-tier topology
+`npus_count=[2,2,2]`, `link_bw=[52.8, 24.5, 21.0]` (NVLink pair / intra-NUMA PCIe / cross-socket QPI).
+Question: does representing the topology correctly close the sim↔vLLM gap? Model:
+Llama-3.1-70B (sim base / vLLM Instruct — architecturally identical), vLLM 0.8.4, TP=8, gpu_util 0.9.
+
+### Saturated serving (ShareGPT, 100 req, arrival rate 10/s)
+Identical workload both engines (21,027 input / ~23,339 output tokens).
+
+| metric | sim (3-tier, measured) | vLLM (real) | sim error |
+|---|---:|---:|---:|
+| total throughput (tok/s) | 619.8 | 305.8 | **+103 %** |
+| gen throughput (tok/s) | 326.0 | 160.9 | +103 % |
+| request throughput (req/s) | 1.40 | 0.69 | +103 % |
+| makespan (s) | 71.6 | 145.1 | −51 % |
+| TTFT p50 (ms) | 173.4 | 22 588 | (queueing-dominated — see below) |
+| TPOT p50 (ms) | 96.9 | 287.9 | −66 % |
+
+### Unsaturated (15 req, 15 s spacing → concurrency ≈ 1, output capped 32 tok)
+Isolates per-request behaviour from queue buildup. TTFT is prefill-only and load-independent.
+
+| metric | sim (3-tier) | vLLM (real) | sim vs vLLM |
+|---|---:|---:|---:|
+| TTFT p50 (ms) | 92.0 | 186.8 | sim −51 % (≈2× optimistic) |
+| TPOT p50 (ms) | 85.5 | 43.4 | sim **+97 %** (2× *pessimistic*) |
+
+### Findings
+- **The 3-tier topology fixes representation, not magnitude.** The sim now *expresses* the
+  NVLink/PCIe/QPI hierarchy, but on the saturated serving workload it is still **~2.0× optimistic
+  on throughput** (consistent across total/gen/req — the makespan is exactly half).
+- **TTFT: the 125× saturated gap is almost entirely queueing.** Drop the arrival rate and vLLM
+  TTFT collapses 22 588 ms → 187 ms; against sim's 92 ms that is a clean ~2× (prefill +
+  scheduling overhead the analytical model underestimates), not a structural error.
+- **TPOT is load-dependent and the sim does not model it.** vLLM single-stream decode is
+  *faster* than sim (43 vs 85 ms — the analytical per-token cost is conservative), but under
+  saturation it balloons to 288 ms (batch contention + per-step all-reduce over PCIe/QPI) while
+  sim stays flat at ~90–97 ms. The sim captures neither the low-load speed nor the high-load
+  degradation.
+
+### Calibration factor (A40 8-GPU 2-socket, 70B, TP=8)
+For serving-throughput estimates on this fabric, scale sim output by **÷2.0** (sim ≈ 2.0× real):
+
+| quantity | sim → real |
+|---|---|
+| throughput (tok/s, req/s) | × **0.49** |
+| makespan / wall time | × **2.0** |
+| TPOT under load | not a constant factor — sim ≈ flat; real scales with concurrency (43 ms isolated → 288 ms saturated) |
+| TTFT | add queueing (sim omits it); isolated prefill sim × ≈2.0 |
+
+Treat the throughput factor as a first-order correction for *this* fabric/model/TP point only;
+the latency behaviour needs a load-dependent collective-overhead model to be predictive.
+
+Artifacts: `cluster_config/a40_8gpu_tp8_70b_3tier.json`, `docs/dse/fabrics.yaml` (a40_8gpu_2socket),
+`output/{bench_tp8_70b_3tier,sim_a40_2socket_tp8_70b,sim_lowrate_ttft}.csv`,
+`validation/vllm_a40_tp8_lowrate_results.jsonl`, `dataset/sharegpt_lowrate_ttft15.jsonl`;
+measured tp8 profiles under `perf_models/A40/meta-llama/Llama-3.1-70B/tp8/`.
