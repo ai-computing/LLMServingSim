@@ -450,3 +450,53 @@ collective crosses QPI (≈1.0× for intra-socket TP≤4, ≈0.49× for cross-so
 
 Artifacts: `cluster_config/a40_4gpu_tp4_70b_2tier.json`, `output/sim_tp4_2tier.csv`,
 `validation/vllm_a40_tp4_70b_sharegpt100_results.jsonl`.
+
+### Root-cause: why TP=8 is off — and why link-param calibration can't fix it (2026-06-25)
+
+The "≈0.49× throughput" factor above is an empirical post-hoc correction — **not** something
+reproducible by tuning the model's interconnect parameters. Two experiments establish that.
+
+**(a) Real NCCL all-reduce vs the sim's bandwidth-only model** (`validation/nccl_allreduce_bench.py`,
+torch.distributed/NCCL, fp16, GPUs 0–3 intra-socket vs 0–7 cross-socket):
+
+| message | TP4 real ms | TP8 real ms | TP8 busbw | sim model ms (bytes/bw, lat=0) | real/sim |
+|---|---:|---:|---:|---:|---:|
+| 16 KB (decode) | 0.057 | 0.070 | 0.4 GB/s | 0.0014 | **51×** |
+| 256 KB | 0.034 | 0.092 | 5.0 | 0.022 | 4.2× |
+| 4 MB | 0.218 | 0.455 | 16.1 | 0.350 | 1.3× |
+| 64 MB (prefill) | 2.586 | 7.898 | 14.9 | 5.592 | 1.4× |
+
+Findings: (i) a **fixed ~35–90 µs latency floor** the `latency=0` model misses entirely (51× too
+cheap at decode sizes); (ii) real TP8 effective busbw **saturates at ~15 GB/s**, below the 21 GB/s
+QPI nominal; (iii) real TP8 all-reduce is **3.05× slower than TP4** at 64 MB (7.90 vs 2.59 ms) while
+the model assumes only 1.4×. Per-link 16 KB floors: NVLink 37 µs / PCIe 52 µs / cross-socket QPI 52 µs.
+
+**(b) Closed-loop: inject the measured numbers and re-run the saturated TP8 sim.** Variants on
+`a40_8gpu_tp8_70b_3tier.json` (ShareGPT 100):
+
+| variant | link_bw (QPI) | link_latency (ns, per dim) | total tput | TPOT p50 | vs original |
+|---|---|---|---:|---:|---:|
+| original | 21 | [0,0,0] | 619.8 | 96.9 | — |
+| A: bw only | **15** | [0,0,0] | 619.8 | 96.9 | **0 %** |
+| B: bw + measured latency | 15 | [10000,18500,6500] | 601.5 | 100.1 | −3 % |
+| C: **absurd** (sanity) | **1** | [50000,100000,500000] | 535.6 | 112.9 | −14 % |
+| **vLLM (real)** | — | — | **305.8** | (288) | target |
+
+**Conclusion — the gap is structural, not a parameter error.** Cutting QPI bandwidth 21→15 changes
+the output by *zero* (byte-identical); even physically absurd penalties (QPI 1 GB/s, 500 µs/hop —
+~21–77× the measured values) close only ~14 % of the gap. The simulator is **compute-bound** for
+70B TP=8 decode: per-token time is gated by the layer compute profile (~97 ms TPOT floor) and the
+all-reduce is a minority additive term that no realistic — or even unrealistic — link setting can
+make dominant. Reality is **comm-bound and load-dependent**: real per-token time runs 43 ms isolated
+→ 288 ms saturated (batch contention + per-step cross-socket collective), a 6.7× swing the sim does
+not represent at all (sim ≈ flat ~97 ms regardless of link params or load).
+
+Therefore the ≈2× throughput correction is a **black-box external factor**, not derivable in-model.
+Closing it requires a *structural* change — modelling the collective as a load-dependent layer-gating
+cost (serialized with compute, scaling with batch and participant count / QPI crossing), plus a
+GPU comm-stall term — consistent with the 8B study's measured ~111 W stall. Tuning `link_bw` /
+`link_latency` is confirmed insufficient.
+
+Artifacts: `validation/nccl_allreduce_bench.py` (run `python3 ... <world_size>`, set
+`CUDA_VISIBLE_DEVICES` to pick GPUs); calibration variants reproduced by editing `link_bw[2]` /
+`link_latency` in `cluster_config/a40_8gpu_tp8_70b_3tier.json` to the rows above.
