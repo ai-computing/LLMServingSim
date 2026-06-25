@@ -319,10 +319,11 @@ def main():
                 # mark non-waiting state
                 waiting_request[instance_id] = False
                 instance = instances[instance_id]
-                generate_trace(new_req, instance["hardware"], instance["npu_num"], instance["npu_group"], instance["pd_type"], 
+                generate_trace(new_req, instance["hardware"], instance["npu_num"], instance["npu_group"], instance["pd_type"],
                                node_id, instance_id, max_num_batched_tokens, placement[instance_id], block_mode_on[instance_id],
-                               expert_routing_policy, enable_prefix_caching, enable_attn_offloading, power_model, pim_models[node_id], enable_attn_prediction, 
-                               enable_sub_batch_interleaving, fp)
+                               expert_routing_policy, enable_prefix_caching, enable_attn_offloading, power_model, pim_models[node_id], enable_attn_prediction,
+                               enable_sub_batch_interleaving, fp,
+                               tp_group_shape=instance.get("tp_group_shape"), collective_overhead=instance.get("collective_overhead"))
                 generate_graph(new_req, instance["hardware"], instance["npu_num"], node_id,
                                instance_id, inst2npu_mapping[instance_id], enable_local_offloading)
             workload = get_workload(new_req, instance["hardware"], instance_id)

@@ -158,6 +158,10 @@ def build_cluster_config(astra_sim, cluster_config_path, enable_local_offloading
             
             instance["node_id"] = node_id
             instance["instance_id"] = inst_id
+            # cluster-level interconnect info, surfaced per-instance for the trace generator's
+            # collective-overhead model (see trace_generator._collective_overhead_ns)
+            instance["tp_group_shape"] = cluster_config.get("tp_group_shape")
+            instance["collective_overhead"] = cluster_config.get("collective_overhead")
             inst2node_mapping[inst_id] = node_id
             inst_id += 1
             # add hardware count in power config

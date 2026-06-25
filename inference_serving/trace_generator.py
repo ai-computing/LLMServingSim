@@ -42,9 +42,33 @@ _attn_nn_cache: dict = {}
 logger = get_logger("TraceGenerator")
 
 # Wrapper function that creates trace for a instance
+def _collective_overhead_ns(co, npus_per_group, total_len, pd_type):
+    """Load-dependent TP all-reduce sync overhead that the bandwidth-only collective
+    model misses. Validated via validation/nccl_allreduce_bench.py: real all-reduce has
+    a fixed ~35-90us latency floor (the latency=0 link model ignores it) plus a cost that
+    explodes once the group crosses the slow cross-socket link, and grows with batch
+    (43ms->288ms TPOT isolated->saturated). Opt-in via cluster_config 'collective_overhead';
+    returns ns added to EACH TP all-reduce op (2 per layer). Gated on the group crossing the
+    socket boundary so intra-socket configs (e.g. TP<=4 on an 8-GPU 2-socket box) are untouched.
+
+    config block: {"enabled": true, "socket_size": 4, "floor_ns": 70000, "per_token_ns": <calib>}
+    """
+    # return int ns: trace latency must stay integer (a float flips "67584" -> "67584.0"
+    # which the Chakra/ASTRA-Sim parser rejects, hanging the run)
+    if not co or not co.get("enabled"):
+        return 0
+    socket_size = co.get("socket_size", npus_per_group)  # default: never "crosses" -> no overhead
+    if npus_per_group <= socket_size:
+        return 0
+    floor = float(co.get("floor_ns", 0))
+    load = 1.0 if pd_type == "prefill" else float(max(1, total_len))  # decode total_len ~ running batch
+    return int(floor + float(co.get("per_token_ns", 0)) * load)
+
+
 def generate_trace(batch, hardware, npu_num, npu_group, pd_type=None, node_id=0, instance_id=0,
                     max_num_batched_tokens=2048, placement={}, block_mode_on=False, expert_routing_policy="RR",
-                    enable_prefix_caching=False, enable_attn_offloading=False, power_model=None, pim_model=None, enable_attn_prediction=False, enable_sub_batch_interleaving=False, fp=16):
+                    enable_prefix_caching=False, enable_attn_offloading=False, power_model=None, pim_model=None, enable_attn_prediction=False, enable_sub_batch_interleaving=False, fp=16,
+                    tp_group_shape=None, collective_overhead=None):
 
     model = batch.model
     config = get_config(model)
@@ -76,13 +100,15 @@ def generate_trace(batch, hardware, npu_num, npu_group, pd_type=None, node_id=0,
     # make trace
     if not enable_sub_batch_interleaving:
         _synthesize_trace(hardware, model, config, npu_num, npu_group, pd_type, node_id, instance_id, batch, max_len, output_path,
-                        placement, block_mode_on, gate, enable_prefix_caching, enable_attn_offloading, power_model, pim_model, enable_attn_prediction, fp)
+                        placement, block_mode_on, gate, enable_prefix_caching, enable_attn_offloading, power_model, pim_model, enable_attn_prediction, fp,
+                        tp_group_shape=tp_group_shape, collective_overhead=collective_overhead)
     else:
         batches = _make_sub_batch(batch)
         if len(batches) < 2 or len(batches[0].requests) == 0 or len(batches[1].requests) == 0:
             # not enough requests to split, fall back to normal trace generation
             _synthesize_trace(hardware, model, config, npu_num, npu_group, pd_type, node_id, instance_id, batch, max_len, output_path,
-                        placement, block_mode_on, gate, enable_prefix_caching, enable_attn_offloading, power_model, pim_model, enable_attn_prediction, fp)
+                        placement, block_mode_on, gate, enable_prefix_caching, enable_attn_offloading, power_model, pim_model, enable_attn_prediction, fp,
+                        tp_group_shape=tp_group_shape, collective_overhead=collective_overhead)
         else:
             _synthesize_interleaved_trace(hardware, model, config, npu_num, npu_group, pd_type, node_id, instance_id, batches, max_len, output_path,
                         placement, block_mode_on, gate, enable_prefix_caching, enable_attn_offloading, power_model, pim_model, enable_attn_prediction, fp)
@@ -138,8 +164,9 @@ def generate_trace(batch, hardware, npu_num, npu_group, pd_type=None, node_id=0,
 
 # Generates trace for the batch
 def _synthesize_trace(hardware, model, config, npu_num, npu_group, pd_type, node_id, instance_id, batch, max_len, output_path,
-                     placement, block_mode_on, gate, enable_prefix_caching, enable_attn_offloading, power_model, pim_model, enable_attn_prediction, fp):
-    
+                     placement, block_mode_on, gate, enable_prefix_caching, enable_attn_offloading, power_model, pim_model, enable_attn_prediction, fp,
+                     tp_group_shape=None, collective_overhead=None):
+
     n_embd = config['hidden_size']
     n_head = config['num_attention_heads']
     kv_head = config.get('num_key_value_heads', n_head)
@@ -169,6 +196,11 @@ def _synthesize_trace(hardware, model, config, npu_num, npu_group, pd_type, node
 
     if enable_prefix_caching:
         total_len = max(1, total_len - hit_len)
+
+    # collective-overhead model (opt-in): extra latency per TP all-reduce that the
+    # bandwidth-only ASTRA-Sim collective misses. 0 unless cluster_config enables it AND
+    # the TP group crosses the socket boundary. Added to o_proj & down_proj all-reduce ops.
+    coll_oh = _collective_overhead_ns(collective_overhead, npus_per_group, total_len, pd_type)
 
     # used for pim, only when enable_attn_offloading is True
     pim_config = None
@@ -357,7 +389,7 @@ def _synthesize_trace(hardware, model, config, npu_num, npu_group, pd_type, node
                     o_proj_tp_pd_kv_prepare =  700_000
                 if pd_type == "decode":
                     o_proj_tp_pd_kv_prepare =  700 * decode_key[0]
-            block_res.append(formatter(str(o_proj_matching_row["layer_name"]), str(o_proj_matching_row['latency(ns)'] + o_proj_tp_pd_kv_prepare), 'LOCAL', str(o_proj_input), get_device(placement, layer_num, "o_proj", "weights"), str(o_proj_weight), 'LOCAL', str(o_proj_output), o_proj_comm_type, str(o_proj_comm_size), 'NONE'))
+            block_res.append(formatter(str(o_proj_matching_row["layer_name"]), str(o_proj_matching_row['latency(ns)'] + o_proj_tp_pd_kv_prepare + coll_oh), 'LOCAL', str(o_proj_input), get_device(placement, layer_num, "o_proj", "weights"), str(o_proj_weight), 'LOCAL', str(o_proj_output), o_proj_comm_type, str(o_proj_comm_size), 'NONE'))
             if power_model is not None:
                 latency_power_list.append(o_proj_matching_row['latency(ns)'])
                 ring_data = total_ring_data(o_proj_comm_size, npus_per_group, collective="allreduce")
@@ -405,7 +437,7 @@ def _synthesize_trace(hardware, model, config, npu_num, npu_group, pd_type, node
                 if npus_per_group > 1:
                     down_proj_comm_size = down_proj_output
                     down_proj_comm_type = 'ALLREDUCE'
-                block_res.append(formatter(str(down_proj_matching_row["layer_name"]), str(down_proj_matching_row['latency(ns)']), 'LOCAL', str(down_proj_input), get_device(placement, layer_num, "down_proj", "weights"), str(down_proj_weight), 'LOCAL', str(down_proj_output), down_proj_comm_type, str(down_proj_comm_size), 'NONE'))
+                block_res.append(formatter(str(down_proj_matching_row["layer_name"]), str(down_proj_matching_row['latency(ns)'] + coll_oh), 'LOCAL', str(down_proj_input), get_device(placement, layer_num, "down_proj", "weights"), str(down_proj_weight), 'LOCAL', str(down_proj_output), down_proj_comm_type, str(down_proj_comm_size), 'NONE'))
                 if power_model is not None:
                     latency_power_list.append(down_proj_matching_row['latency(ns)'])
                     ring_data = total_ring_data(down_proj_comm_size, npus_per_group, collective="allreduce")

@@ -500,3 +500,54 @@ GPU comm-stall term — consistent with the 8B study's measured ~111 W stall. Tu
 Artifacts: `validation/nccl_allreduce_bench.py` (run `python3 ... <world_size>`, set
 `CUDA_VISIBLE_DEVICES` to pick GPUs); calibration variants reproduced by editing `link_bw[2]` /
 `link_latency` in `cluster_config/a40_8gpu_tp8_70b_3tier.json` to the rows above.
+
+### Structural fix: a load-dependent collective-overhead model (2026-06-25)
+
+Since link-param tuning can't reach reality (above), the fix is structural: a collective-overhead
+latency added **on the compute critical path** (where ASTRA-Sim's overlapped/bandwidth-only comm
+could not), at the TP all-reduce points (o_proj + down_proj) in the trace generator. Opt-in via a
+cluster_config block, **off by default** (existing results unchanged), and **gated on crossing the
+socket boundary** so intra-socket configs are untouched:
+
+```json
+"collective_overhead": {"enabled": true, "socket_size": 4, "floor_ns": 70000, "per_token_ns": 10000}
+```
+`overhead_ns = floor_ns + per_token_ns × (decode batch)`, applied per all-reduce only when
+`npus_per_group > socket_size`. `floor_ns` = 70 µs (the measured NCCL latency floor); `per_token_ns`
+is the one calibrated constant (the load-dependent term — the earlier study proved this cost is real
+but not expressible via link bandwidth/latency). Implementation:
+`trace_generator._collective_overhead_ns` + `config_builder`/`main.py` threading.
+
+**Calibration sweep** (TP8, ShareGPT 100; floor fixed 70 µs):
+
+| per_token_ns | total tput (tok/s) | TPOT p50 (ms) |
+|---|---:|---:|
+| 0 (off) | 619.8 | 96.9 |
+| 4000 | 429.2 | 185.7 |
+| 8000 | 337.9 | 263.9 |
+| **10000 (chosen)** | **305.3** | **303.0** |
+| 12000 | 278.2 | 341.9 |
+| **vLLM (real)** | **305.8** | **287.9** |
+
+**Result at per_token_ns=10000** — the sim now matches real vLLM:
+
+| metric | sim off | sim + model | vLLM | err (model vs vLLM) |
+|---|---:|---:|---:|---:|
+| total tput (tok/s) | 619.8 | 305.3 | 305.8 | **0.2 %** |
+| gen tput (tok/s) | 326.0 | 160.6 | 160.9 | 0.2 % |
+| request tput (req/s) | 1.40 | 0.69 | 0.69 | **0 %** |
+| makespan (s) | 71.6 | 145.3 | 145.1 | 0.2 % |
+| TPOT p50 (ms) | 96.9 | 303.0 | 287.9 | +5 % |
+
+Validation: **regression** — same config with the block absent is byte-identical (619.8, TPOT 96.9);
+**TP4 gating** — enabling the *identical* block on the TP4 2-tier config leaves it at 420.9 / 145.8
+(unchanged, since `npus_per_group=4 ≤ socket_size`). So the model closes the cross-socket gap to
+≤5 % without touching the configs it already predicted well, and now reproduces the load-dependent
+slowdown (TPOT 97→303 ms, TTFT 173 ms→12.9 s under saturation) that static link params could not.
+
+Caveat: `per_token_ns` is a single empirical per-box/model constant, not yet derived from first
+principles; the contribution here is the *mechanism* (socket-gated, load-scaled, critical-path
+collective cost) that makes the cost representable at all.
+
+Artifacts: `cluster_config/a40_8gpu_tp8_70b_3tier_cohd.json`;
+`inference_serving/trace_generator.py` (`_collective_overhead_ns`).
