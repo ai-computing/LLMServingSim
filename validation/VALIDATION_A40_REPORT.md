@@ -551,3 +551,24 @@ collective cost) that makes the cost representable at all.
 
 Artifacts: `cluster_config/a40_8gpu_tp8_70b_3tier_cohd.json`;
 `inference_serving/trace_generator.py` (`_collective_overhead_ns`).
+
+#### Cross-model check: the same constant fixes 8B TP=8
+
+The earlier 8B TP=8 study (above) showed the flat sim at **+106 %** gen throughput vs vLLM. Applying
+the *identical* overhead block — same `floor_ns=70000`, same **`per_token_ns=10000`** as 70B, only
+the 3-tier `link_bw` swapped onto `a40_8gpu_tp8.json` — on the same workload (ShareGPT 300, APC on):
+
+| metric | sim off | sim + model (pt=10000) | vLLM | err (model) |
+|---|---:|---:|---:|---:|
+| gen throughput (tok/s) | 1444.7 | 638.3 | 690.1 | **−7.5 %** |
+| total throughput (tok/s) | 2611.8 | 1153.9 | 1248.2 | −7.6 % |
+| TPOT p50 (ms) | 39.5 | 261.9 | 251.9 | +4 % |
+
+So **one constant (`floor_ns=70 µs`, `per_token_ns=10 µs`, socket-gated) closes TP=8 for both 8B and
+70B** (70B: +0.2 %, 8B: −7.5 %), versus +103–106 % uncalibrated. That the same value transfers across
+a ~9× model-size change suggests the overhead is a **hardware/collective property of the cross-socket
+all-reduce**, not a per-model fudge factor — a stronger result than a black-box throughput scalar.
+(Note 8B has 32 layers / 64 all-reduces per token vs 70B's 80 / 160; the per-op constant still
+transfers because both the overhead and the compute floor scale with depth.)
+
+Artifacts: `cluster_config/a40_8gpu_tp8_8b_3tier_cohd.json`.
