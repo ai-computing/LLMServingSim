@@ -519,6 +519,7 @@ async def run_sweep(
             ic.get("link_latency", link_latency),
             power_template=power_template,
             tp_group_shape=ic.get("tp_group_shape"),
+            collective_overhead=ic.get("collective_overhead"),
         )
         cfg_path = sweep_dir / "configs" / f"{spec.label}.json"
         cfg_path.write_text(json.dumps(cluster_json, indent=4))
