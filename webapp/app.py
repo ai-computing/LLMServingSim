@@ -75,6 +75,24 @@ _jinja = Environment(
 app = FastAPI(title="LLMServingSim Web UI")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+
+def _static_url(rel_path: str) -> str:
+    """Build a /static/<rel_path> URL with a cache-busting ?v=<mtime> suffix.
+
+    The version is the file's modification time, so the URL changes whenever the
+    asset is edited — browsers fetch the new file instead of serving a stale
+    cached copy (which previously left an old dse_progress.js calling the wrong
+    cancel endpoint). Falls back to no suffix if the file is missing.
+    """
+    f = STATIC_DIR / rel_path
+    try:
+        return f"/static/{rel_path}?v={int(f.stat().st_mtime)}"
+    except OSError:
+        return f"/static/{rel_path}"
+
+
+_jinja.globals["static"] = _static_url
+
 # DSE (Design Space Exploration) routes. Lives under /api/dse/... so it's
 # isolated from sweep routes but shares the same FastAPI process, catalog,
 # and SSE infrastructure (webapp.runner). See webapp/dse/server/routes.py.
