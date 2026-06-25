@@ -586,6 +586,17 @@ async def cancel_sweep(sweep_id: str) -> None:
                 pass
 
 
+def is_cancelled(sweep_id: str) -> bool:
+    """Whether a cancel was requested for this sweep and not yet finalized.
+
+    run_sweep() resets the flag to False at the start of each round and pops it
+    in finalize_sweep(); between rounds (broadcast_final=False) the flag set by
+    cancel_sweep() survives, so multi-round callers (run_dse_job retry loop) can
+    poll this to stop spawning more work after a user cancel.
+    """
+    return _cancel_flags.get(sweep_id, False)
+
+
 def subscribe_events(sweep_id: str) -> asyncio.Queue:
     """Return a fresh queue that receives future events for the sweep."""
     queue: asyncio.Queue = asyncio.Queue(maxsize=1024)
