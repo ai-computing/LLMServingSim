@@ -69,8 +69,9 @@ def _create_past_key_values(config, kv_len, device):
     """
     num_layers = config.num_hidden_layers
 
-    # Total KV heads in the (global) config
-    num_kv_heads_total = config.num_key_value_heads // config.tp_size
+    # Per-rank KV heads. GQA under TP replicates KV heads when tp_size > num_key_value_heads,
+    # so each rank keeps >=1 whole KV head (matches k_proj/v_proj sharding in models/llama.py).
+    num_kv_heads_total = max(1, config.num_key_value_heads // config.tp_size)
 
     # Head dim is always based on total attention heads (not KV heads)
     head_dim = config.hidden_size // (config.num_attention_heads) # config has been already divided by tp_size

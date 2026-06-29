@@ -151,7 +151,7 @@ def get_max_num_blocks(
     block_memory_size = (
         2
         * block_size
-        * (getattr(model_config, "num_key_value_heads", getattr(model_config, "num_attention_heads", 32)) // tensor_parallel_size)
+        * max(1, getattr(model_config, "num_key_value_heads", getattr(model_config, "num_attention_heads", 32)) // tensor_parallel_size)  # GQA: KV heads replicated (>=1/rank) when tp > num_kv_heads
         * (getattr(model_config, "hidden_size", 4096) // getattr(model_config, "num_attention_heads", 32))
         * element_size
     )

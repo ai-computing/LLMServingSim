@@ -119,7 +119,8 @@ def profile_flash_attention(
     timer_stats_store = TimerStatsStore(profile_method=profile_method)
 
     num_heads_per_shard = getattr(model_config, "num_attention_heads", 32) // tp_size
-    num_kv_heads_per_shard = getattr(model_config, "num_key_value_heads", getattr(model_config, "num_attention_heads", 32)) // tp_size
+    # GQA under TP: KV heads are replicated (>=1 per rank) when tp_size > num_key_value_heads
+    num_kv_heads_per_shard = max(1, getattr(model_config, "num_key_value_heads", getattr(model_config, "num_attention_heads", 32)) // tp_size)
     head_dim = getattr(model_config, "hidden_size", 4096) // getattr(model_config, "num_attention_heads", 32)
 
     # -------------------------------------------------------

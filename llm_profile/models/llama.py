@@ -224,11 +224,15 @@ class LlamaAttention(nn.Module):
         self.q_proj = nn.Linear(
             config.hidden_size, config.num_attention_heads * self.head_dim // config.tp_size, bias=config.attention_bias
         )
+        # GQA under TP: when tp_size > num_key_value_heads the KV heads are *replicated*
+        # (each rank keeps >=1 whole KV head), not sharded below a head — otherwise the
+        # KV projection drops below head_dim and the (-1, head_dim) reshape fails.
+        kv_heads_per_rank = max(1, config.num_key_value_heads // config.tp_size)
         self.k_proj = nn.Linear(
-            config.hidden_size, config.num_key_value_heads * self.head_dim // config.tp_size, bias=config.attention_bias
+            config.hidden_size, kv_heads_per_rank * self.head_dim, bias=config.attention_bias
         )
         self.v_proj = nn.Linear(
-            config.hidden_size, config.num_key_value_heads * self.head_dim // config.tp_size, bias=config.attention_bias
+            config.hidden_size, kv_heads_per_rank * self.head_dim, bias=config.attention_bias
         )
         self.o_proj = nn.Linear(
             config.num_attention_heads * self.head_dim // config.tp_size, config.hidden_size, bias=config.attention_bias
