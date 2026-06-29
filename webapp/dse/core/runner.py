@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from webapp.runner import finalize_sweep, run_sweep
+from webapp.runner import finalize_sweep, is_cancelled, run_sweep
 from webapp.parser import parse_run
 from webapp.hardware_catalog import build_catalog
 
@@ -114,6 +114,11 @@ async def run_dse_job(
     all_candidates: list[CandidateConfig] = list(candidates)
 
     for round_num in range(_MAX_RETRY_ROUNDS):
+        # Stop retrying if the user cancelled: the "cancelled" states below
+        # would otherwise be treated as failures and trigger replacement runs,
+        # so a cancel would never actually halt the sweep.
+        if is_cancelled(job_id):
+            break
         status_path = job_dir / "status.json"
         if not status_path.exists():
             break

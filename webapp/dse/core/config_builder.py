@@ -87,6 +87,7 @@ def write_candidate_cluster_json(
         link_latency=ic.get("link_latency", link_latency),
         power_template=power,
         tp_group_shape=ic.get("tp_group_shape"),
+        collective_overhead=ic.get("collective_overhead"),
     )
     out_path = output_dir / f"{candidate.label}.json"
     out_path.write_text(json.dumps(cluster_json, indent=2))

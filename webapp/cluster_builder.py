@@ -53,6 +53,7 @@ def build_cluster_json(
     instances_per_node: "list[list[InstanceSpec]] | None" = None,
     power_template: "dict | None" = None,
     tp_group_shape: "list[int] | None" = None,
+    collective_overhead: "dict | None" = None,
 ) -> dict:
     """Produce a cluster JSON dict accepted by config_builder.py.
 
@@ -113,6 +114,8 @@ def build_cluster_json(
     }
     if tp_group_shape:
         cluster["tp_group_shape"] = list(tp_group_shape)
+    if collective_overhead:
+        cluster["collective_overhead"] = collective_overhead
     return cluster
 
 

@@ -27,6 +27,14 @@ fabrics:
       - {name: nvlink, size: 2, bw_gbs: 52.8, latency_ns: 0}
       - {name: pcie,   size: 2, bw_gbs: 24.5, latency_ns: 0}
       - {name: qpi,    size: 2, bw_gbs: 21.0, latency_ns: 0}
+    # Load-dependent TP all-reduce overhead the bandwidth-only collective misses.
+    # Applied only when the TP group crosses the socket boundary (npus_per_group >
+    # socket_size), i.e. TP8 here; TP<=4 stays intra-socket and untouched.
+    # Calibrated vs real vLLM on A40 (validation/VALIDATION_A40_REPORT.md):
+    # closes TP8 70B gap 619.8->305.3 (vLLM 305.8) and 8B +106%->-7.5% with the
+    # same per_token_ns, so it tracks the cross-socket collective, not the model.
+    # See inference_serving/trace_generator.py:_collective_overhead_ns.
+    collective_overhead: {enabled: true, socket_size: 4, floor_ns: 70000, per_token_ns: 10000}
 
   # 8-GPU NVLink full mesh (예: A100/H100 SXM DGX 노드의 단일 NVLink 도메인).
   nvlink_8gpu:

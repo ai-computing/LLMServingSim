@@ -67,7 +67,9 @@
             } catch (e) {}
         });
         document.getElementById('btn-cancel').addEventListener('click', async () => {
-            await fetch(`/api/dse/jobs/${JOB_ID}`, {method: 'DELETE'});
+            // Cancel (not delete): stops the run but keeps the job + partial
+            // results so Open Results can show the candidates that finished.
+            await fetch(`/api/dse/jobs/${JOB_ID}/cancel`, {method: 'POST'});
         });
     });
 

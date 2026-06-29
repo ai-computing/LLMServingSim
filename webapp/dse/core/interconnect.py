@@ -110,6 +110,11 @@ def resolve_interconnect(
 
     if fabric_def:
         tiers = fabric_def.get("tiers") or []
+        # Load-dependent collective-overhead block (opt-in, fabric-level). Passed
+        # through verbatim to the cluster JSON; the trace generator gates it on the
+        # TP group crossing socket_size, so attaching it to every candidate is safe
+        # (TP<=socket_size candidates get no overhead). None when the fabric omits it.
+        co = fabric_def.get("collective_overhead")
         if tiers:
             if tp > 1:
                 decomp = _decompose_tp(tp, tiers)
@@ -119,6 +124,7 @@ def resolve_interconnect(
                         "link_bw": bws,
                         "link_latency": lats,
                         "tp_group_shape": shape,
+                        "collective_overhead": co,
                     }
                 # TP doesn't factor onto the fabric → slowest tier as scalar.
                 slow = min(tiers, key=lambda t: float(t["bw_gbs"]))
@@ -126,6 +132,7 @@ def resolve_interconnect(
                     "link_bw": float(slow["bw_gbs"]),
                     "link_latency": float(slow.get("latency_ns", 0)),
                     "tp_group_shape": None,
+                    "collective_overhead": co,
                 }
             # TP=1: no intra-group collective; cross-group (PP/DP) traffic
             # crosses the whole box → use the slowest (outermost) tier.
@@ -134,6 +141,7 @@ def resolve_interconnect(
                 "link_bw": float(slow["bw_gbs"]),
                 "link_latency": float(slow.get("latency_ns", 0)),
                 "tp_group_shape": None,
+                "collective_overhead": co,
             }
 
     # Catalog scalar fallback.

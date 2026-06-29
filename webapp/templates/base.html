@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ title|default("LLMServingSim") }}{% endblock %} — LLMServingSim</title>
-    <link rel="stylesheet" href="/static/app.css">
+    <link rel="stylesheet" href="{{ static('app.css') }}">
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 </head>
 <body>
@@ -22,7 +22,7 @@
         {% block content %}{% endblock %}
     </main>
     <div id="toast-host" class="toast-host"></div>
-    <script src="/static/app.js"></script>
+    <script src="{{ static('app.js') }}"></script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -33,6 +33,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from webapp.config import OUTPUT_DIR, compute_max_concurrent
 from webapp.hardware_catalog import build_catalog, list_hardware, list_models_for_hardware
+from webapp.parser import parse_run
 from webapp.runner import cancel_sweep, subscribe_events, unsubscribe_events
 
 from ..core.config_builder import write_candidate_cluster_json
@@ -126,6 +127,49 @@ def _load_candidates_meta(job_dir: Path) -> dict[str, dict]:
     if not path.exists():
         return {}
     return {c["label"]: c for c in json.loads(path.read_text())}
+
+
+def _results_from_status(job_dir: Path) -> list[SimulationResult]:
+    """Reconstruct SimulationResult list from status.json + runs/ on disk.
+
+    Used as a fallback when the ranked *.json files were never persisted — e.g.
+    a cancelled job (ranking races _execute_job) or an interrupted run. Mirrors
+    core.runner._collect_results but keyed off status.json alone (no candidate
+    objects needed).
+    """
+    status_path = job_dir / "status.json"
+    if not status_path.exists():
+        return []
+    try:
+        status = json.loads(status_path.read_text())
+    except json.JSONDecodeError:
+        return []
+    cand_meta = _load_candidates_meta(job_dir)
+    out: list[SimulationResult] = []
+    for label, entry in status.get("configs", {}).items():
+        state = entry.get("state", "queued")
+        if state not in ("done", "failed", "timeout", "cancelled"):
+            continue  # still queued/running — not a result yet
+        metrics = entry.get("metrics", {})
+        log_path = job_dir / "runs" / f"{label}.log"
+        csv_path = job_dir / "runs" / f"{label}.csv"
+        if state == "done" and not metrics:
+            try:
+                metrics = parse_run(log_path, csv_path)
+            except Exception:
+                metrics = {}
+        out.append(SimulationResult(
+            candidate_id=cand_meta.get(label, {}).get("candidate_id", label),
+            label=label,
+            state=state,
+            elapsed_s=float(entry.get("elapsed_s", 0)),
+            metrics=metrics,
+            cluster_config_path=str(job_dir / "configs" / f"{label}.json"),
+            raw_csv_path=str(csv_path) if csv_path.exists() else None,
+            log_path=str(log_path) if log_path.exists() else None,
+            error=entry.get("error"),
+        ))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +374,28 @@ async def api_get_results(job_id: str) -> JSONResponse:
         path = job_dir / f"{kind}.json"
         out[kind] = json.loads(path.read_text()) if path.exists() else []
     out["candidates_meta"] = _load_candidates_meta(job_dir)
+
+    # Fallback: ranked files absent or empty (cancelled / interrupted job) but
+    # some candidates already finished — rank them on the fly so Open Results
+    # shows the completed ones instead of a blank page.
+    if not out["all_candidates"]:
+        results = _results_from_status(job_dir)
+        if any(r.state == "done" for r in results):
+            spec = _load_spec(job_dir)
+            cand_meta = out["candidates_meta"]
+            cand_by_label = {
+                lbl: SimpleNamespace(hw_distribution=m["hw_distribution"])
+                for lbl, m in cand_meta.items()
+            }
+            ranked = rank_candidates(
+                results, spec.constraints, spec.weights, spec.top_n,
+                candidates_by_label=cand_by_label, diversity=True,
+            )
+            out["all_candidates"] = [r.model_dump() for r in ranked.all_results]
+            out["top_n"] = [ranked.all_results[i].model_dump()
+                            for i in ranked.top_n_indices]
+            out["pareto"] = [ranked.all_results[i].model_dump()
+                             for i in ranked.pareto_indices]
     return JSONResponse(out)
 
 
@@ -372,6 +438,24 @@ async def api_rerank(job_id: str, body: dict) -> JSONResponse:
         "all_results": [r.model_dump() for r in ranked.all_results],
         "weights_used": weights.model_dump(),
     })
+
+
+@dse_router.post("/jobs/{job_id}/cancel")
+async def api_cancel_job(job_id: str) -> JSONResponse:
+    """Stop a running sweep but KEEP the job dir + partial results.
+
+    Distinct from DELETE: cancel signals the runner to stop spawning work and
+    SIGTERMs in-flight subprocesses, then lets _execute_job rank+persist the
+    candidates that already finished so Open Results shows the completed ones.
+    """
+    job_dir = _job_dir(job_id)
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail="job not found")
+    try:
+        await cancel_sweep(job_id)
+    except Exception:
+        pass
+    return JSONResponse({"cancelled": True})
 
 
 @dse_router.delete("/jobs/{job_id}")

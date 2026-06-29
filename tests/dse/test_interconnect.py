@@ -122,10 +122,56 @@ def test_build_cluster_json_no_shape_when_scalar():
     assert cj["link_bw"] == 900.0
 
 
+# ---- collective_overhead pass-through -------------------------------------
+
+_COHD = {"enabled": True, "socket_size": 4, "floor_ns": 70000, "per_token_ns": 10000}
+
+
+def test_fabric_passes_collective_overhead_all_tps():
+    fabric = {"tiers": A40_TIERS, "collective_overhead": _COHD}
+    for tp in (1, 2, 4, 8):
+        ic = resolve_interconnect(_spec("A40", tp), fabric, HW_META)
+        assert ic["collective_overhead"] == _COHD
+
+
+def test_fabric_without_overhead_returns_none():
+    ic = resolve_interconnect(_spec("A40", 8), {"tiers": A40_TIERS}, HW_META)
+    assert ic.get("collective_overhead") is None
+
+
+def test_catalog_fallback_has_no_overhead():
+    ic = resolve_interconnect(_spec("H100", 2), None, HW_META)
+    assert "collective_overhead" not in ic
+
+
+def test_build_cluster_json_embeds_collective_overhead():
+    cj = build_cluster_json(
+        _spec("A40", 8), {"mem_size": 256, "mem_bw": 256, "mem_latency": 0},
+        [52.8, 24.5, 21.0], [0, 0, 0],
+        tp_group_shape=[2, 2, 2], collective_overhead=_COHD,
+    )
+    assert cj["collective_overhead"] == _COHD
+
+
+def test_build_cluster_json_no_overhead_key_when_none():
+    cj = build_cluster_json(
+        _spec("H100", 2), {"mem_size": 256, "mem_bw": 256, "mem_latency": 0},
+        900.0, 0, collective_overhead=None,
+    )
+    assert "collective_overhead" not in cj
+
+
 # ---- fabrics.yaml presets load --------------------------------------------
 
 def test_load_fabrics_has_a40_preset():
+    load_fabrics.cache_clear()
     fabs = load_fabrics()
     assert "a40_8gpu_2socket" in fabs
     tiers = fabs["a40_8gpu_2socket"]["tiers"]
     assert [t["size"] for t in tiers] == [2, 2, 2]
+
+
+def test_a40_preset_carries_calibrated_overhead():
+    load_fabrics.cache_clear()
+    co = load_fabrics()["a40_8gpu_2socket"].get("collective_overhead")
+    assert co and co["enabled"] and co["socket_size"] == 4
