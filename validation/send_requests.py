@@ -26,7 +26,7 @@ MODEL = "meta-llama/Llama-3.1-8B"
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--tp", type=int, required=True, choices=[1, 2, 4, 8], help="Tensor parallel size")
+    p.add_argument("--tp", type=int, required=True, choices=[1, 2, 4, 8, 16], help="Tensor parallel size")
     p.add_argument("--port", type=int, default=None, help="vLLM port (default: 8001 for tp=1, 8002 for tp=2)")
     p.add_argument("--dataset", default=DATASET_DEFAULT)
     p.add_argument("--num-req", type=int, default=None, help="Number of requests (default: all)")

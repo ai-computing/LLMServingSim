@@ -51,17 +51,34 @@ def _collective_overhead_ns(co, npus_per_group, total_len, pd_type):
     returns ns added to EACH TP all-reduce op (2 per layer). Gated on the group crossing the
     socket boundary so intra-socket configs (e.g. TP<=4 on an 8-GPU 2-socket box) are untouched.
 
-    config block: {"enabled": true, "socket_size": 4, "floor_ns": 70000, "per_token_ns": <calib>}
+    Multi-tier (multi-node) extension: a TP group can cross successively slower interconnect
+    tiers (NVLink -> intra-node PCIe -> cross-socket QPI -> cross-node IB/NIC). NCCL runs a
+    hierarchical all-reduce whose floor/cost is dominated by the SLOWEST tier the group spans,
+    so we charge the overhead of that slowest crossed tier (not a sum). 'node_size' gates the
+    cross-node (IB) tier the same way 'socket_size' gates the cross-socket (QPI) tier; when the
+    group crosses the node boundary its (larger) IB params take over.
+
+    config block (single tier, backward compatible):
+        {"enabled": true, "socket_size": 4, "floor_ns": 70000, "per_token_ns": <calib>}
+    config block (multi-node): additionally
+        {"node_size": 8, "node_floor_ns": <calib>, "node_per_token_ns": <calib>}
     """
     # return int ns: trace latency must stay integer (a float flips "67584" -> "67584.0"
     # which the Chakra/ASTRA-Sim parser rejects, hanging the run)
     if not co or not co.get("enabled"):
         return 0
+    load = 1.0 if pd_type == "prefill" else float(max(1, total_len))  # decode total_len ~ running batch
+    # Cross-node (IB) tier dominates when crossed: its floor/per-token replace the socket cost,
+    # falling back to the socket params if node-tier ones are omitted.
+    node_size = co.get("node_size")
+    if node_size is not None and npus_per_group > node_size:
+        floor = float(co.get("node_floor_ns", co.get("floor_ns", 0)))
+        per_token = float(co.get("node_per_token_ns", co.get("per_token_ns", 0)))
+        return int(floor + per_token * load)
     socket_size = co.get("socket_size", npus_per_group)  # default: never "crosses" -> no overhead
     if npus_per_group <= socket_size:
         return 0
     floor = float(co.get("floor_ns", 0))
-    load = 1.0 if pd_type == "prefill" else float(max(1, total_len))  # decode total_len ~ running batch
     return int(floor + float(co.get("per_token_ns", 0)) * load)
 
 

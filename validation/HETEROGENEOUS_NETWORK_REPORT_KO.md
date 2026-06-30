@@ -147,39 +147,114 @@ busbw가 공칭 21보다 낮은 **~15 GB/s**, ③ 실제 TP8 all-reduce는 TP4�
 
 ---
 
-## 5. 한계 및 향후 과제
+## 5. 멀티노드 확장 — 노드 간 InfiniBand tier (TP16)
+
+§4까지는 단일 노드(8 GPU, 소켓 경계까지)였다. 본 절은 §5(구 한계 2번)의 후속으로, **2-노드를 연결해
+collective가 노드 경계(InfiniBand)를 넘는 TP16**을 실측 검증한다. (전체 상세: `validation/MULTINODE_TP16_REPORT_KO.md`)
+
+### 5.1 환경
+
+| 항목 | s8 (head) | s2 (worker) |
+|---|---|---|
+| GPU | 8× A40 | 8× A40 |
+| IB iface / IP | `ibs8` / 192.168.210.108 | `ibp194s0` / 192.168.210.102 |
+
+노드 간 링크: **InfiniBand mlx5_0 / ConnectX-6, 200 Gb/s (≈25 GB/s nominal)**, IPoIB 192.168.210.x (양 노드 공통).
+
+→ 이더넷은 1 Gb/s뿐, **유일한 고속 노드 간 경로는 IB**. 실제 vLLM 0.8.4(단일 노드 검증과 동일 버전)를
+Ray 클러스터(head=s8, worker=s2) + NCCL/IB로 TP16 구동, ShareGPT-100 실측. 양 노드 8 GPU 전부 ~42 GB
+점유 확인 = 진성 노드 간 TP16.
+
+### 5.2 모델 확장 — 4계층 + 노드(IB) tier overhead
+
+- **4계층 토폴로지**: `tp_group_shape=[2,2,2,2]`, `link_bw=[52.8, 24.5, 21.0, 25.0]` → all-reduce를
+  NVLink→PCIe→QPI→**IB**로 분해.
+- **노드 경계 게이팅**(`_collective_overhead_ns` 일반화): `npus_per_group > node_size(=8)`이면 IB tier 비용
+  (`node_floor_ns`/`node_per_token_ns`)이 socket(QPI) 비용을 **대체**(가장 느린 교차 tier가 지배 — §3.4와 동일 철학).
+  하위호환: `node_size` 미지정 시 기존과 바이트 동일(**검증: TP8 70B = 305.25 tok/s로 §4.1 재현, 회귀 없음**).
+- 8B tp16 프로파일 신규 생성(GQA KV-head 복제, tp16 > kv_heads=8).
+
+### 5.3 보정 — IB tier 상수 (8B TP16, ShareGPT-100)
+
+5점 sweep으로 처리량·TPOT을 동시에 ~10% 이내로 맞추는 상수를 탐색 → **채택: `node_floor=105µs,
+node_per_token=18µs`**. 단일 노드 QPI tier(70µs/10µs) 대비 **floor 1.5×, per-token 1.8×** (노드 간 IB가
+소켓 간 QPI보다 느린 물리와 일치).
+
+### 5.4 결과 — 8B TP16 (실측 검증)
+
+| 지표 | 개선 전(대역폭만 4계층) | **개선 후(+IB overhead)** | vLLM 실제 | 오차 |
+|---|---:|---:|---:|---:|
+| Gen throughput (tok/s) | 818 | **299** | 330 | **+148% → −9.5%** |
+| TPOT p50 (ms) | 31.5 | **179.8** | 191.3 | **−84% → −6.0%** |
+| TTFT p50 (ms) | 53 | 7998 | 4672 | (정의차 유지) |
+
+→ 대역폭만 모델은 단일 노드와 동일하게 통신을 무시해 처리량을 **+148% 낙관**. IB-tier overhead 보정으로
+**−9.5%/−6.0%** — 단일 노드 8B TP8(−7.5%)과 동급 정확도.
+
+### 5.5 NCCL IB floor 직접 측정 — 보정 floor 교차검증
+
+world_size=16 cross-node all-reduce 직접 측정(`validation/multinode/nccl_ib_allreduce_bench.py`):
+
+| 메시지 | 실측 latency | busbw (GB/s) | sim(bytes/bw, lat=0) | real/sim |
+|---|---:|---:|---:|---:|
+| **16 KB (decode)** | **80.8 µs** | 0.4 | 1.2 µs | **65.8×** |
+| 64 KB | 183.6 µs | 0.7 | 4.9 µs | 37.4× |
+| 64 MB (prefill) | 68.1 ms | 1.8 | 5.03 ms | 13.5× |
+
+→ **16 KB cross-node floor 81 µs ≈ 보정 floor 105 µs**(같은 자릿수; 보정값이 다소 큰 것은 step당
+프레임워크 오버헤드 흡수분). 8B decode payload(토큰당 8 KB, 배치 2–8 → 16–64 KB)가 실측 81–184 µs
+구간이고 보정식 `105 + 18×batch µs`가 이 밴드에 안착 → **end-to-end 보정값이 직접 측정과 독립적으로 일치**.
+유효 busbw 0.4–1.8 GB/s(공칭의 1/15–1/60) = 노드 간 all-reduce가 **대역폭이 아니라 latency·sync 지배**임을
+직접 증명(대역폭만 모델이 65× 빗나가는 근본 원인).
+
+### 5.6 70B TP16 (예측, 실측 보류)
+
+8B 보정 상수(105/18µs)를 70B에 적용한 예측: total **222.6 tok/s**(대역폭만 682), TPOT 458.7 ms.
+→ 70B도 **TP16(노드 간) < TP8(노드 내, 305)** 로 comm-bound 심화의 정성적 일관성. **70B ground-truth는
+s2 디스크 부족(여유 134 GB < 가중치 132 GB + 이미지 24 GB)으로 보류** — 8B↔70B 상수 전이 재확인은 미완.
+
+---
+
+## 6. 한계 및 향후 과제
 
 1. **`per_token_ns`는 경험 상수**: 8B·70B에 동일 값이 전이되어 하드웨어 속성으로 추정되나, 1st-principle
    유도는 아직 아님. 기여는 비용을 *표현 가능하게* 만든 메커니즘(socket-gated, load-scaled, critical-path).
-2. **다중 노드(TP≥16) 미검증**: 본 서버는 8 GPU뿐. TP16/32는 노드 간 NIC/InfiniBand tier가 추가되며,
-   `tp_group_shape`를 한 단계 더 확장하고 overhead를 IB tier로 재보정해야 함.
+2. **멀티노드 70B 실측 미완**(§5.6): s2 디스크 확보 후 70B TP16 실측으로 8B↔70B 상수 전이를 재확인 필요.
+   IB tier 보정(105/18µs)은 8B 1점 보정이라 다양한 배치/payload 일반화도 추가 과제.
 3. **전력 모델**: TP4 이상에서 flat `active_power=300W/GPU`가 실측(~205W)을 과대평가(+29%) — TP 차수별
    이용률 반영 필요(본 작업 범위 밖).
 4. **TTFT 정의 차이**(연산 완료 기준 vs 클라이언트 수신)는 유지 — 처리량/TPOT이 비교 기준.
 
 ---
 
-## 6. 산출물
+## 7. 산출물
 
 **코드**
 - `inference_serving/config_builder.py` — 계층형 네트워크 생성(`tp_group_shape`, per-tier 배열) + instance 전달
-- `inference_serving/trace_generator.py` — `_collective_overhead_ns` + o_proj/down_proj 적용
+- `inference_serving/trace_generator.py` — `_collective_overhead_ns` + o_proj/down_proj 적용; **노드(IB) tier 게이팅(`node_size`/`node_floor_ns`/`node_per_token_ns`) 추가**
 - `main.py` — 클러스터 인터커넥트 정보 전달
 - `llm_profile/{models/llama.py, profiler/...}` — GQA 고-TP 프로파일링(KV 복제) 4곳 수정
 
-**설정/데이터**
+**설정/데이터 (단일 노드)**
 - `cluster_config/a40_8gpu_tp8_70b_3tier{,_cohd}.json`, `a40_4gpu_tp4_70b_2tier.json`,
   `a40_8gpu_tp8_8b_3tier_cohd.json`
 - `docs/dse/fabrics.yaml` (fabric `a40_8gpu_2socket`)
 - `validation/nccl_allreduce_bench.py`, `validation/vllm_a40_tp{4,8}_*results.jsonl`
 - 실측 프로파일 `llm_profile/perf_models/A40/meta-llama/Llama-3.1-70B/tp{8,16,32}/`
 
-**상세 검증 기록**: `validation/VALIDATION_A40_REPORT.md`
-(TP=4 control point / TP=8 root-cause / 구조적 모델 / 8B 교차검증 섹션)
+**설정/데이터 (멀티노드, §5)**
+- `cluster_config/a40_16gpu_tp16_{8b,70b}_4tier{,_cohd}.json` (4계층 + IB overhead 보정 상수)
+- 신규 프로파일 `llm_profile/perf_models/A40/meta-llama/Llama-3.1-8B/tp16/`
+- `validation/multinode/{run_cluster_node.sh, serve_tp16.sh, run_multinode_validation.sh, nccl_ib_allreduce_bench.py}`
+- `validation/vllm_a40_tp16_8b_results.jsonl`(실측), `validation/sim_a40_tp16_*`(sim), `validation/compare_tp16.py`
+- `validation/multinode/nccl_ib_{s8_head,s2_worker}.log`(NCCL IB all-reduce 실측 로그)
+
+**상세 검증 기록**: `validation/VALIDATION_A40_REPORT.md` (TP=4 control / TP=8 root-cause / 구조적 모델 / 8B 교차검증),
+**`validation/MULTINODE_TP16_REPORT_KO.md`** (멀티노드 TP16 전체 기록)
 
 ---
 
-## 7. 결론
+## 8. 결론
 
 LLMServingSim의 균등 대역폭 가정은 소켓 내(TP≤4) 구성에선 충분(오차 ±17% 이내)하지만, **collective가
 소켓 간 QPI를 가로지르는 TP8에서 처리량을 ~2배 낙관**했다. 본 작업은 (1) **계층형 인터커넥트 모델**로
@@ -188,3 +263,11 @@ LLMServingSim의 균등 대역폭 가정은 소켓 내(TP≤4) 구성에선 충�
 **+103%(70B)/+106%(8B) → +0.2%/−7.5%** 로 줄였고, **TP4↔TP8 성능 역전과 부하 의존 지연 열화를 실제와
 일치하게 재현**했다. 단일 상수가 모델 크기를 가로질러 전이된다는 점은 이 보정이 하드웨어 고유 특성을
 포착함을 뒷받침한다.
+
+**멀티노드 확장(§5)**: 동일 메커니즘에 **노드 경계(InfiniBand) tier**를 한 단계 더 추가하고, 실제 2-노드
+(s8+s2)×8 A40 = 16 GPU vLLM TP16 실측으로 IB tier 상수(`node_floor=105µs, per_token=18µs`)를 보정해
+**8B TP16 처리량/TPOT 오차를 +148%/−84% → −9.5%/−6.0%**로 줄였다. 이 보정 floor는 직접 측정한 16 KB
+cross-node NCCL all-reduce latency(81µs)와 독립적으로 일치하며, QPI tier 대비 floor 1.5×·per-token 1.8×로
+물리적으로 타당하다. 즉 **소켓→노드 경계로 한 단계 깊어진 비균질성에 대해서도 동일한 모델링 철학(가장 느린
+교차 tier의 부하 의존 비용을 임계경로에 주입)이 일관되게 작동**함을 보였다. 70B 멀티노드 실측은 s2 디스크
+확보 후 과제로 남는다.
