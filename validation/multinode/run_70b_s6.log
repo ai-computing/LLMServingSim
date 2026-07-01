@@ -1,0 +1,64 @@
+==> [0/5] IB path check: s8 -> s6 (192.168.210.106)
+==> [1/5] Start Ray HEAD on s8
+7220da91144a1c8cdb27e5c2fee5a9ea8ceca18aec62a985f337dbf80391c5eb
+2026-07-01 08:20:36,785	INFO usage_lib.py:467 -- Usage stats collection is enabled by default without user confirmation because this terminal is detected to be non-interactive. To disable this, add `--disable-usage-stats` to the command that starts the cluster, or run the following command: `ray disable-usage-stats` before starting the cluster. See https://docs.ray.io/en/master/cluster/usage-stats.html for more details.
+2026-07-01 08:20:36,785	INFO scripts.py:971 -- [37mLocal node IP[39m: [1m192.168.210.108[22m
+2026-07-01 08:20:38,907	SUCC scripts.py:1007 -- [32m--------------------[39m
+2026-07-01 08:20:38,907	SUCC scripts.py:1008 -- [32mRay runtime started.[39m
+2026-07-01 08:20:38,907	SUCC scripts.py:1009 -- [32m--------------------[39m
+2026-07-01 08:20:38,907	INFO scripts.py:1011 -- [36mNext steps[39m
+2026-07-01 08:20:38,907	INFO scripts.py:1014 -- To add another node to this Ray cluster, run
+2026-07-01 08:20:38,907	INFO scripts.py:1017 -- [1m  ray start --address='192.168.210.108:6379'[22m
+2026-07-01 08:20:38,907	INFO scripts.py:1026 -- To connect to this Ray cluster:
+2026-07-01 08:20:38,907	INFO scripts.py:1028 -- [35mimport[39m[26m ray
+2026-07-01 08:20:38,907	INFO scripts.py:1029 -- ray[35m.[39m[26minit(_node_ip_address[35m=[39m[26m[33m'192.168.210.108'[39m[26m)
+2026-07-01 08:20:38,907	INFO scripts.py:1041 -- To submit a Ray job using the Ray Jobs CLI:
+2026-07-01 08:20:38,907	INFO scripts.py:1042 -- [1m  RAY_ADDRESS='http://192.168.210.108:8265' ray job submit --working-dir . -- python my_script.py[22m
+2026-07-01 08:20:38,908	INFO scripts.py:1051 -- See https://docs.ray.io/en/latest/cluster/running-applications/job-submission/index.html 
+2026-07-01 08:20:38,908	INFO scripts.py:1055 -- for more information on submitting Ray jobs to the Ray cluster.
+2026-07-01 08:20:38,908	INFO scripts.py:1060 -- To terminate the Ray runtime, run
+2026-07-01 08:20:38,908	INFO scripts.py:1061 -- [1m  ray stop[22m
+2026-07-01 08:20:38,908	INFO scripts.py:1064 -- To view the status of the cluster, use
+2026-07-01 08:20:38,908	INFO scripts.py:1065 --   [1mray status[22m[26m
+2026-07-01 08:20:38,908	INFO scripts.py:1069 -- To monitor and debug Ray, view the dashboard at 
+2026-07-01 08:20:38,908	INFO scripts.py:1070 --   [1m192.168.210.108:8265[22m[26m
+2026-07-01 08:20:38,908	INFO scripts.py:1077 -- [4mIf connection to the dashboard fails, check your firewall settings and network configuration.[24m
+[head] container 'vllm_mn' up, ray started on 192.168.210.108 (iface ibs8)
+==> [2/5] Start Ray WORKER on s6 (over IB)
+dc1f176566a25f6bbed800c57373a51e0bb6710db8ec9c8aeb4fb8dac54cfb96
+[2026-07-01 08:20:57,203 W 15 15] global_state_accessor.cc:435: Retrying to get node with node ID 193c9a3b7797db192886c439671c587f2e3a8f8cf2cc3246b57095f9
+2026-07-01 08:20:57,095	INFO scripts.py:1152 -- [37mLocal node IP[39m: [1m192.168.210.106[22m
+2026-07-01 08:20:58,207	SUCC scripts.py:1168 -- [32m--------------------[39m
+2026-07-01 08:20:58,208	SUCC scripts.py:1169 -- [32mRay runtime started.[39m
+2026-07-01 08:20:58,208	SUCC scripts.py:1170 -- [32m--------------------[39m
+2026-07-01 08:20:58,208	INFO scripts.py:1172 -- To terminate the Ray runtime, run
+2026-07-01 08:20:58,208	INFO scripts.py:1173 -- [1m  ray stop[22m
+[worker] container 'vllm_mn' up, ray started on 192.168.210.106 (iface ibs8)
+==> [3/5] Verify Ray sees 16 GPUs
+   ray GPUs: 16.0
+==> [4/5] Launch TP=16 serve + wait for health
+==> Ray cluster resources:
+ 1 node_193c9a3b7797db192886c439671c587f2e3a8f8cf2cc3246b57095f9
+ 1 node_4621e5b93f564b191023b9a400b1f10369a22ce771b7280f529295e3
+ 0.0/16.0 GPU
+==> Launching vLLM serve (TP=16, ray backend) on port 8016 ...
+==> Waiting for server health (up to 20 min: 16-way NCCL/IB init is slow) ...
+vLLM TP16 ready after 57*5s
+==> [5/5] Send 100 requests
+Loaded 100 requests from dataset/sharegpt_req100_rate10_llama.jsonl
+Target server: http://localhost:8016/v1/completions
+Output: /home/swsok/LLMServingSim/validation/vllm_a40_tp16_70b_results.jsonl
+Checking server health...
+Server ready. Starting request replay...
+  Dispatched 50/100 requests...
+  Dispatched 100/100 requests...
+All 100 requests dispatched. Waiting for completion...
+
+=== Results (100/100 succeeded, 0 errors) ===
+TTFT  p50=35489.8ms  p99=66225.7ms
+TPOT  p50=890.0ms  p99=8810.6ms
+Throughput ≈ 66.5 tok/s (output tokens)
+
+Saved to: /home/swsok/LLMServingSim/validation/vllm_a40_tp16_70b_results.jsonl
+==> DONE. ground-truth results: /home/swsok/LLMServingSim/validation/vllm_a40_tp16_70b_results.jsonl
+[teardown] stopping ray + containers on both nodes

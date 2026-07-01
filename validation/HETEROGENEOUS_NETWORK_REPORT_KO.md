@@ -1,7 +1,7 @@
 # 비균질 네트워크 특성 반영을 통한 LLMServingSim 시뮬레이션 정확도 개선 보고서
 
 **대상 서버**: 8× NVIDIA A40, 2-socket 워크스테이션
-**대상 모델**: Llama-3.1-70B / 8B (TP=2/4/8)
+**대상 모델**: Llama-3.1-70B / 8B (TP=2/4/8/16)
 **기준(ground truth)**: 실제 vLLM 0.8.4 실측
 **작성일**: 2026-06
 
@@ -154,16 +154,19 @@ collective가 노드 경계(InfiniBand)를 넘는 TP16**을 실측 검증한다.
 
 ### 5.1 환경
 
-| 항목 | s8 (head) | s2 (worker) |
-|---|---|---|
-| GPU | 8× A40 | 8× A40 |
-| IB iface / IP | `ibs8` / 192.168.210.108 | `ibp194s0` / 192.168.210.102 |
+| 항목 | s8 (head) | s2 (worker, 8B용) | s6 (worker, 70B용) |
+|---|---|---|---|
+| GPU | 8× A40 | 8× A40 | 8× A40 |
+| IB iface / IP | `ibs8` / 192.168.210.108 | `ibp194s0` / 192.168.210.102 | `ibs8` / 192.168.210.106 |
+| 루트 디스크 여유 | 554 GB | 96 GB | 290 GB |
 
-노드 간 링크: **InfiniBand mlx5_0 / ConnectX-6, 200 Gb/s (≈25 GB/s nominal)**, IPoIB 192.168.210.x (양 노드 공통).
+노드 간 링크: **InfiniBand mlx5_0 / ConnectX-6, 200 Gb/s (4X HDR, ≈25 GB/s nominal)**, IPoIB 192.168.210.x.
+s8↔s2 와 s8↔s6 는 **동일 IB 패브릭**(GID subnet prefix `fe80::` 동일, ACTIVE 200 Gb/s)이므로 §5.3 보정 상수를 공유한다.
 
 → 이더넷은 1 Gb/s뿐, **유일한 고속 노드 간 경로는 IB**. 실제 vLLM 0.8.4(단일 노드 검증과 동일 버전)를
-Ray 클러스터(head=s8, worker=s2) + NCCL/IB로 TP16 구동, ShareGPT-100 실측. 양 노드 8 GPU 전부 ~42 GB
-점유 확인 = 진성 노드 간 TP16.
+Ray 클러스터(head=s8) + NCCL/IB로 TP16 구동, ShareGPT-100 실측. 양 노드 8 GPU 전부 점유 확인 = 진성
+노드 간 TP16. **8B는 worker=s2, 70B는 worker=s6** — s2 디스크(여유 96 GB) < 70B FP16 가중치 132 GB 라
+동일 IB 패브릭이면서 290 GB 여유인 s6로 대체했다(동일 200 Gb/s IB이므로 IB-tier 보정 상수 그대로 적용).
 
 ### 5.2 모델 확장 — 4계층 + 노드(IB) tier overhead
 
@@ -207,11 +210,52 @@ world_size=16 cross-node all-reduce 직접 측정(`validation/multinode/nccl_ib_
 유효 busbw 0.4–1.8 GB/s(공칭의 1/15–1/60) = 노드 간 all-reduce가 **대역폭이 아니라 latency·sync 지배**임을
 직접 증명(대역폭만 모델이 65× 빗나가는 근본 원인).
 
-### 5.6 70B TP16 (예측, 실측 보류)
+### 5.6 70B TP16 — 8B 상수 적용 예측
 
-8B 보정 상수(105/18µs)를 70B에 적용한 예측: total **222.6 tok/s**(대역폭만 682), TPOT 458.7 ms.
-→ 70B도 **TP16(노드 간) < TP8(노드 내, 305)** 로 comm-bound 심화의 정성적 일관성. **70B ground-truth는
-s2 디스크 부족(여유 134 GB < 가중치 132 GB + 이미지 24 GB)으로 보류** — 8B↔70B 상수 전이 재확인은 미완.
+8B 보정 상수(105/18µs)를 70B에 **그대로 전이**한 예측: total **222.6 tok/s**(대역폭만 682), TPOT p50 458.7 ms.
+→ 70B도 **TP16(노드 간) < TP8(노드 내, 305)** 로 comm-bound 심화의 정성적 일관성.
+이 예측이 실측과 얼마나 맞는지, 그리고 8B↔70B 상수 전이가 노드 tier에서도 성립하는지는 §5.7에서 실측 검증한다.
+
+### 5.7 70B TP16 실측 및 IB 상수 재보정 (2026-07-01, s8+s6)
+
+§5.6 예측을 실제 vLLM로 검증했다. s2 디스크 부족은 **s6(290 GB 여유, s8과 동일 200 Gb/s IB 패브릭)** 로 해소
+(§5.1). s6의 IPoIB(`ibs8`)를 192.168.210.106에 올려 s8↔s6 IB를 확보하고, 70B-Instruct FP16 가중치(132 GB)를
+IB로 rsync한 뒤 Ray(head=s8)+NCCL/IB로 TP16을 구동했다. **ShareGPT-100, 100/100 요청 성공(TPOT 유효 n=97)**,
+양 노드 8 GPU 전부 점유 = 진성 노드 간 TP16.
+
+| 지표 | 개선 전(대역폭만 4계층) | +IB overhead (8B 상수 105/18µs) | **+IB overhead (70B 보정 105/40µs)** | vLLM 실제 |
+|---|---:|---:|---:|---:|
+| Gen throughput (tok/s) | 359 | 117 | **66** | 66.5 |
+| TPOT p50 (ms) | 87.5 | 458.7 | **893.7** | 890.0 |
+| TTFT p50 (ms) | 166 | 27418 | — | 35412 |
+| Gen 오차 | +439% | +76% | **−1.9%** | — |
+| TPOT 오차 | −90% | −48.5% | **+0.4%** | — |
+
+**핵심 발견 — 노드 tier per-token 상수는 모델 크기에 스케일.** 8B에서 보정한 상수(105/18µs)를 70B에 그대로
+전이하면 **gen +76% / TPOT −48.5%** 로 여전히 크게 낙관한다(단일 노드 QPI tier에서 8B↔70B 상수가 ±8% 이내로
+전이된 §4.2와 대조). 즉 노드 경계 all-reduce는 8B보다 70B에서 유의하게 더 comm-bound다.
+
+**재보정(4점 sweep, 실측 gen 66.5 / TPOT 890 목표):**
+
+| node_floor | node_per_token | gen | TPOT p50 | gen 오차 | TPOT 오차 |
+|---:|---:|---:|---:|---:|---:|
+| 105 µs | 36 µs | 71 | 814.7 | +6.7% | −8.5% |
+| **105 µs** | **40 µs** | **66** | **893.7** | **−1.9%** | **+0.4%** |
+| 105 µs | 44 µs | 61 | 972.7 | −9.1% | +9.3% |
+| 150 µs | 40 µs | 65 | 900.9 | −3.3% | +1.2% |
+
+→ **채택: `node_floor=105µs`(8B와 동일, 불변), `node_per_token=18→40µs`**. 두 성분이 서로 다르게 거동한다:
+- **floor(105µs)는 모델 독립** — 순수 IB latency·sync 핸드셰이크 상수. 8B·70B 공통이며 §5.5의 직접 측정
+  16 KB cross-node all-reduce floor(81µs)와 같은 자릿수. floor를 150µs로 올려도 개선 없음(위 4행) → floor는 이미 포화.
+- **per_token(18→40µs, ≈2.2×)은 모델 크기 스케일** — 노드 간 all-reduce payload가 hidden_size에 비례하고
+  70B hidden(8192)이 8B(4096)의 **정확히 2×**. 관측된 2.2×가 이 payload 비율과 일치(잔여 0.2×는 더 큰 FFN·
+  step당 sync 누적으로 해석). → **노드 tier에서 latency floor는 하드웨어 상수로 전이되나, per-token 비용은
+  collective 볼륨(모델 크기)에 비례해 스케일**한다. §4.2(단일 노드 QPI tier)의 "단일 상수 전이"를 노드 경계로
+  정밀화한 결과다.
+
+보정 후 70B TP16 오차는 **gen −1.9% / TPOT +0.4%** — 8B TP16(−9.5%/−6.0%)과 동급으로, 노드 간 TP16
+전 구간(8B·70B)에서 ~2% 이내 정확도를 달성했다. 정성적으로도 **70B TP16(노드 간, 66 tok/s) < TP8(노드 내,
+305)** 로 comm-bound 심화를 실제와 일치하게 재현한다.
 
 ---
 
@@ -219,8 +263,9 @@ s2 디스크 부족(여유 134 GB < 가중치 132 GB + 이미지 24 GB)으로 �
 
 1. **`per_token_ns`는 경험 상수**: 8B·70B에 동일 값이 전이되어 하드웨어 속성으로 추정되나, 1st-principle
    유도는 아직 아님. 기여는 비용을 *표현 가능하게* 만든 메커니즘(socket-gated, load-scaled, critical-path).
-2. **멀티노드 70B 실측 미완**(§5.6): s2 디스크 확보 후 70B TP16 실측으로 8B↔70B 상수 전이를 재확인 필요.
-   IB tier 보정(105/18µs)은 8B 1점 보정이라 다양한 배치/payload 일반화도 추가 과제.
+2. **노드 tier per-token 상수의 모델 크기 스케일**(§5.7): 멀티노드 70B는 s6로 실측 완료. floor(105µs)는
+   8B·70B 공통이나 per-token은 18→40µs(≈hidden 비율 2×)로 스케일함을 확인했다. 다만 이 스케일 법칙은
+   8B·70B 두 점 관측이라, 임의 모델·payload로의 일반화(예: `per_token ∝ hidden_size` 1st-principle 유도)는 추가 과제.
 3. **전력 모델**: TP4 이상에서 flat `active_power=300W/GPU`가 실측(~205W)을 과대평가(+29%) — TP 차수별
    이용률 반영 필요(본 작업 범위 밖).
 4. **TTFT 정의 차이**(연산 완료 기준 vs 클라이언트 수신)는 유지 — 처리량/TPOT이 비교 기준.
@@ -244,9 +289,11 @@ s2 디스크 부족(여유 134 GB < 가중치 132 GB + 이미지 24 GB)으로 �
 
 **설정/데이터 (멀티노드, §5)**
 - `cluster_config/a40_16gpu_tp16_{8b,70b}_4tier{,_cohd}.json` (4계층 + IB overhead 보정 상수)
+- `cluster_config/a40_16gpu_tp16_70b_4tier_cohd_cal.json` (**70B 재보정 상수 105/40µs**, §5.7)
 - 신규 프로파일 `llm_profile/perf_models/A40/meta-llama/Llama-3.1-8B/tp16/`
 - `validation/multinode/{run_cluster_node.sh, serve_tp16.sh, run_multinode_validation.sh, nccl_ib_allreduce_bench.py}`
-- `validation/vllm_a40_tp16_8b_results.jsonl`(실측), `validation/sim_a40_tp16_*`(sim), `validation/compare_tp16.py`
+- `validation/multinode/run_multinode_validation_s6.sh` (**70B s8+s6 실측 러너**), `recal_70b_sweep.py` (IB 상수 재보정 sweep)
+- `validation/vllm_a40_tp16_{8b,70b}_results.jsonl`(실측), `validation/sim_a40_tp16_*`(sim, 70B 보정본 `..._cohd_cal_*` 포함), `validation/compare_tp16.py`
 - `validation/multinode/nccl_ib_{s8_head,s2_worker}.log`(NCCL IB all-reduce 실측 로그)
 
 **상세 검증 기록**: `validation/VALIDATION_A40_REPORT.md` (TP=4 control / TP=8 root-cause / 구조적 모델 / 8B 교차검증),
@@ -269,5 +316,10 @@ LLMServingSim의 균등 대역폭 가정은 소켓 내(TP≤4) 구성에선 충�
 **8B TP16 처리량/TPOT 오차를 +148%/−84% → −9.5%/−6.0%**로 줄였다. 이 보정 floor는 직접 측정한 16 KB
 cross-node NCCL all-reduce latency(81µs)와 독립적으로 일치하며, QPI tier 대비 floor 1.5×·per-token 1.8×로
 물리적으로 타당하다. 즉 **소켓→노드 경계로 한 단계 깊어진 비균질성에 대해서도 동일한 모델링 철학(가장 느린
-교차 tier의 부하 의존 비용을 임계경로에 주입)이 일관되게 작동**함을 보였다. 70B 멀티노드 실측은 s2 디스크
-확보 후 과제로 남는다.
+교차 tier의 부하 의존 비용을 임계경로에 주입)이 일관되게 작동**함을 보였다.
+
+**70B 멀티노드도 s6(동일 IB 패브릭, 290 GB 여유)로 실측 완료(§5.7)**: 8B 보정 상수를 그대로 전이하면
+gen +76%로 낙관하나, **`node_per_token`을 18→40µs(≈hidden 비율 2×)로 스케일**하면 **gen −1.9% / TPOT +0.4%**.
+즉 노드 tier에서는 **latency floor(105µs)는 모델 독립 하드웨어 상수로 전이되고, per-token 비용만 collective
+볼륨(모델 크기)에 비례해 스케일**한다 — §4.2(단일 노드 QPI tier)의 "단일 상수 전이"를 노드 경계로 정밀화한
+결과다. 이로써 **8B·70B × TP8·TP16 전 구간에서 ~2%(TP16)–8%(TP8) 이내 정확도**를 확보했다.

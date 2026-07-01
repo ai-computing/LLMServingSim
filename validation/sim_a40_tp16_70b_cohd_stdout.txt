@@ -836,7 +836,7 @@ All Request Has Been Exited
 --------------------------------------------------------------------------------
 [1m[96m▶ Simulation results...
 [0m[0m
-Total simulation time: 0h 8m 32.857s
+Total simulation time: 0h 9m 12.371s
 --------------------------------------------------------------------------------
 [95m                               Throughput Results                               [0m
 --------------------------------------------------------------------------------
@@ -881,4 +881,4 @@ Mean ITL (ms):                                                      407.98
 Median ITL (ms):                                                    281.68
 P99 ITL (ms):                                                       5884.72
 --------------------------------------------------------------------------------
-Saving each request's information to output file: validation/sim_a40_tp16_70b_cohd_results.csv
+Saving each request's information to output file: output/sim_tp16_70b_cohd.csv
