@@ -20,21 +20,29 @@
 
 fabrics:
 
-  # 8×A40, 2-socket 워크스테이션. cluster_config/a40_8gpu_tp8_70b_3tier.json 과 동일.
+  # 8×A40 2-socket 워크스테이션, 노드당 8 GPU, 200G InfiniBand 로 최대 2 노드(16 GPU)까지.
+  #   - TP<=8 : 한 박스 안 (nvlink/pcie/qpi) — cluster_config/a40_8gpu_tp8_70b_3tier.json 과 동일.
+  #   - TP16  : 4번째 ib 티어를 소비해 노드 경계를 넘는다 → tp_group_shape=[2,2,2,2],
+  #             link_bw=[52.8,24.5,21.0,25.0]. 검증된 cluster_config/a40_16gpu_tp16_70b_4tier*.json
+  #             와 동일한 토폴로지. (size 곱 = 16 = 2 노드 × 8 GPU)
   a40_8gpu_2socket:
-    description: "8×A40 2-socket: NVLink pair / intra-NUMA PCIe / cross-socket QPI"
+    description: "8×A40/node, 2-socket: NVLink / intra-NUMA PCIe / cross-socket QPI / cross-node 200G IB"
     tiers:
       - {name: nvlink, size: 2, bw_gbs: 52.8, latency_ns: 0}
       - {name: pcie,   size: 2, bw_gbs: 24.5, latency_ns: 0}
       - {name: qpi,    size: 2, bw_gbs: 21.0, latency_ns: 0}
+      # 노드 경계: 200 Gbps InfiniBand = 25.0 GB/s 단방향. TP>8 인 후보만 이 티어를 소비한다.
+      # 실제 NCCL IB all-reduce + vLLM TP16 으로 검증 (validation/MULTINODE_TP16_REPORT_KO.md).
+      - {name: ib,     size: 2, bw_gbs: 25.0, latency_ns: 0}
     # Load-dependent TP all-reduce overhead the bandwidth-only collective misses.
-    # Applied only when the TP group crosses the socket boundary (npus_per_group >
-    # socket_size), i.e. TP8 here; TP<=4 stays intra-socket and untouched.
-    # Calibrated vs real vLLM on A40 (validation/VALIDATION_A40_REPORT.md):
-    # closes TP8 70B gap 619.8->305.3 (vLLM 305.8) and 8B +106%->-7.5% with the
-    # same per_token_ns, so it tracks the cross-socket collective, not the model.
-    # See inference_serving/trace_generator.py:_collective_overhead_ns.
-    collective_overhead: {enabled: true, socket_size: 4, floor_ns: 70000, per_token_ns: 10000}
+    # Two tiers, each gated independently in trace_generator.py:_collective_overhead_ns:
+    #   - socket_size=4 : TP group crosses the cross-socket QPI boundary (TP8). TP<=4 untouched.
+    #     Calibrated vs real vLLM on A40 (validation/VALIDATION_A40_REPORT.md):
+    #     closes TP8 70B gap 619.8->305.3 (vLLM 305.8) and 8B +106%->-7.5%.
+    #   - node_size=8 : TP group crosses the cross-node IB boundary (TP16). TP<=8 untouched.
+    #     Calibrated vs real NCCL IB all-reduce + vLLM (validation/MULTINODE_TP16_REPORT_KO.md);
+    #     matches cluster_config/a40_16gpu_tp16_70b_4tier_cohd.json.
+    collective_overhead: {enabled: true, socket_size: 4, floor_ns: 70000, per_token_ns: 10000, node_size: 8, node_floor_ns: 105000, node_per_token_ns: 18000}
 
   # 8-GPU NVLink full mesh (예: A100/H100 SXM DGX 노드의 단일 NVLink 도메인).
   nvlink_8gpu:

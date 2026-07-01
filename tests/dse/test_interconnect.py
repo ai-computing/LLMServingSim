@@ -168,10 +168,39 @@ def test_load_fabrics_has_a40_preset():
     fabs = load_fabrics()
     assert "a40_8gpu_2socket" in fabs
     tiers = fabs["a40_8gpu_2socket"]["tiers"]
-    assert [t["size"] for t in tiers] == [2, 2, 2]
+    # 4 tiers: nvlink/pcie/qpi intra-box + cross-node 200G IB (8 GPU/node, up to 2 nodes).
+    assert [t["size"] for t in tiers] == [2, 2, 2, 2]
+    ib = tiers[-1]
+    assert ib["name"] == "ib"
+    assert ib["bw_gbs"] == 25.0  # 200 Gbps unidirectional
 
 
 def test_a40_preset_carries_calibrated_overhead():
     load_fabrics.cache_clear()
     co = load_fabrics()["a40_8gpu_2socket"].get("collective_overhead")
     assert co and co["enabled"] and co["socket_size"] == 4
+    # cross-node IB collective overhead gates on the node boundary (TP > 8).
+    assert co["node_size"] == 8
+    assert co["node_floor_ns"] == 105000
+    assert co["node_per_token_ns"] == 18000
+
+
+def test_a40_preset_tp16_crosses_node_on_ib():
+    """TP16 on the A40 box spans 2 nodes: outermost TP dim must use the 25 GB/s
+    (200 Gbps) IB link, matching cluster_config/a40_16gpu_tp16_70b_4tier.json."""
+    load_fabrics.cache_clear()
+    fabric = load_fabrics()["a40_8gpu_2socket"]
+    ic = resolve_interconnect(_spec("A40", 16), fabric, HW_META)
+    assert ic["tp_group_shape"] == [2, 2, 2, 2]
+    assert ic["link_bw"] == [52.8, 24.5, 21.0, 25.0]
+    assert ic["link_bw"][-1] == 25.0  # cross-node 200G IB is the outermost dim
+
+
+def test_a40_preset_tp8_stays_intra_node():
+    """TP8 fits one box: must NOT consume the IB tier (no 25 GB/s dim)."""
+    load_fabrics.cache_clear()
+    fabric = load_fabrics()["a40_8gpu_2socket"]
+    ic = resolve_interconnect(_spec("A40", 8), fabric, HW_META)
+    assert ic["tp_group_shape"] == [2, 2, 2]
+    assert ic["link_bw"] == [52.8, 24.5, 21.0]
+    assert 25.0 not in ic["link_bw"]
