@@ -145,6 +145,38 @@ busbw가 공칭 21보다 낮은 **~15 GB/s**, ③ 실제 TP8 all-reduce는 TP4�
 → 오차의 임계점이 **TP 차수가 아니라 "collective가 소켓 경계(QPI)를 넘는지"** 임을 보여줌. 본 작업은
 이 임계점(TP8)을 정확히 겨냥해 보정한다.
 
+### 4.6 NVLink 제거 ablation — tier 기여의 직접 실측 (2026-07-03)
+
+§2의 tier 특성(Tier 0 NVLink 52.8 vs Tier 1 PCIe 24.5 GB/s)과 §3.3의 "노드 내 all-reduce는 latency 지배"
+주장을 **하드웨어에서 직접** 검증했다. 동일 노드(s8) A40에서 Llama-3.1-8B를 TP2·TP4로 각각 2회 벤치마크 —
+이미지·가중치·워크로드(ShareGPT-100, FP16, vLLM 0.8.4) 완전 동일, **`NCCL_P2P_DISABLE`만 차이**로 NVLink
+사용 여부만 격리했다(NCCL 로그로 실제 전송 경로 확인).
+
+- **TP2** (GPU 0,1 = 순수 NVLink 쌍, 유일 링크가 NVLink): NVLink 실행=**전 채널 NVLink**(P2P/IPC 8, SHM 0),
+  PCIe 실행=**전 채널 SHM**(P2P/IPC 0, SHM 8) → 이상적 격리.
+- **TP4** (GPU 0,1,2,3 = NUMA 0; NVLink 쌍 (0,1)(2,3), 쌍 간 PCIe): NVLink 실행 P2P/IPC 22 + SHM 18,
+  PCIe 실행 P2P/IPC 0 + SHM 28.
+
+| TP | 지표 | NVLink | PCIe (NVLink off) | 변화 |
+|---|---|---:|---:|---:|
+| 2 | Gen tput (tok/s) | 1129.7 | 1105.7 | −2.1% |
+| 2 | TPOT p50 (ms) | 22.60 | 24.28 | +7.4% |
+| 2 | TPOT p99 (ms) | 26.64 | 31.52 | +18.3% |
+| 2 | TTFT p50 (ms) | 49.7 | 54.6 | +10.0% |
+| 4 | Gen tput (tok/s) | 1248.8 | 1178.8 | −5.6% |
+| 4 | TPOT p50 (ms) | 23.77 | 27.65 | +16.3% |
+| 4 | TPOT p99 (ms) | 29.99 | 55.03 | +83.5% |
+| 4 | TTFT p50 (ms) | 54.9 | 69.6 | +26.6% |
+
+**두 가지 결론:**
+1. **NVLink 이득은 대역폭이 아니라 latency에서 나온다** — NVLink를 끄면 처리량 영향은 작으나(TP2 −2.1%,
+   TP4 −5.6%) 디코드 지연 TPOT은 크게 악화(TP2 p50 +7.4%, TP4 p50 +16.3%, p99 +18~84%). 디코드 all-reduce는
+   작은 메시지(토큰당 수십 KB)라 대역폭 여유가 커 **고정 지연이 임계경로** — §3.3의 NCCL 실측(작은 메시지
+   35–90µs latency floor)과 정확히 일치한다.
+2. **효과는 TP 차수에 비례** — TP4가 TP2보다 통신 비중이 커(all-reduce 링크·볼륨 증가) NVLink 제거 페널티가
+   약 2배(TPOT p50 +7.4%→+16.3%). 즉 tier 이질성의 영향은 collective가 커질수록 확대된다 — §4.4(TP4↔TP8 역전)·
+   §5.7(IB tier per-token 스케일)와 같은 방향의 물리다.
+
 ---
 
 ## 5. 멀티노드 확장 — 노드 간 InfiniBand tier (TP16)
@@ -286,6 +318,8 @@ IB로 rsync한 뒤 Ray(head=s8)+NCCL/IB로 TP16을 구동했다. **ShareGPT-100,
 - `docs/dse/fabrics.yaml` (fabric `2socket_8npu_nvlink_bridge_per_2slot`)
 - `validation/nccl_allreduce_bench.py`, `validation/vllm_a40_tp{4,8}_*results.jsonl`
 - 실측 프로파일 `llm_profile/perf_models/A40/meta-llama/Llama-3.1-70B/tp{8,16,32}/`
+- **NVLink ablation(§4.6)**: `validation/run_vllm_tp_nvlink_ablation.sh` (TP 파라미터화 러너),
+  `validation/vllm_a40_tp{2,4}_{nvlink,pcie}_{results.jsonl,serve.log,power.csv}` (실측 + NCCL 전송경로 증거)
 
 **설정/데이터 (멀티노드, §5)**
 - `cluster_config/a40_16gpu_tp16_{8b,70b}_4tier{,_cohd}.json` (4계층 + IB overhead 보정 상수)
@@ -309,7 +343,9 @@ LLMServingSim의 균등 대역폭 가정은 소켓 내(TP≤4) 구성에선 충�
 의존 collective-overhead 모델**(연산 임계경로, socket-gated)로 비용을 주입했다. 그 결과 TP8 처리량 오차를
 **+103%(70B)/+106%(8B) → +0.2%/−7.5%** 로 줄였고, **TP4↔TP8 성능 역전과 부하 의존 지연 열화를 실제와
 일치하게 재현**했다. 단일 상수가 모델 크기를 가로질러 전이된다는 점은 이 보정이 하드웨어 고유 특성을
-포착함을 뒷받침한다.
+포착함을 뒷받침한다. 나아가 **NVLink 제거 ablation(§4.6)** 은 이 tier 비용이 대역폭이 아니라 **latency**에서
+비롯됨을 하드웨어에서 직접 확인했다 — NVLink를 끄면 처리량은 소폭(TP2 −2.1%/TP4 −5.6%)이나 디코드 지연
+TPOT은 크게(p50 +7~16%, p99 +18~84%) 악화하며, 그 폭이 TP 차수에 비례해 커진다.
 
 **멀티노드 확장(§5)**: 동일 메커니즘에 **노드 경계(InfiniBand) tier**를 한 단계 더 추가하고, 실제 2-노드
 (s8+s2)×8 A40 = 16 GPU vLLM TP16 실측으로 IB tier 상수(`node_floor=105µs, per_token=18µs`)를 보정해
