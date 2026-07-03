@@ -45,7 +45,7 @@ LLMServingSim의 네트워크 모델은 **단일 균등 대역폭(`link_bw`)** �
 - 스칼라+`tp_group_shape` 미지정 시 기존 평탄 출력과 **바이트 동일**(하위호환).
 
 예) 8-GPU TP8 → `npus_count=[2,2,2]`, `bandwidth=[52.8, 24.5, 21.0]`
-(config: `cluster_config/a40_8gpu_tp8_70b_3tier.json`, DSE fabric `a40_8gpu_2socket`).
+(config: `cluster_config/a40_8gpu_tp8_70b_3tier.json`, DSE fabric `2socket_8npu_nvlink_bridge_per_2slot`).
 
 ASTRA-Sim이 이 3차원 위계를 소비해 TP all-reduce를 NVLink→PCIe→QPI로 분해 실행함을 sanity-run으로 확인.
 
@@ -283,7 +283,7 @@ IB로 rsync한 뒤 Ray(head=s8)+NCCL/IB로 TP16을 구동했다. **ShareGPT-100,
 **설정/데이터 (단일 노드)**
 - `cluster_config/a40_8gpu_tp8_70b_3tier{,_cohd}.json`, `a40_4gpu_tp4_70b_2tier.json`,
   `a40_8gpu_tp8_8b_3tier_cohd.json`
-- `docs/dse/fabrics.yaml` (fabric `a40_8gpu_2socket`)
+- `docs/dse/fabrics.yaml` (fabric `2socket_8npu_nvlink_bridge_per_2slot`)
 - `validation/nccl_allreduce_bench.py`, `validation/vllm_a40_tp{4,8}_*results.jsonl`
 - 실측 프로파일 `llm_profile/perf_models/A40/meta-llama/Llama-3.1-70B/tp{8,16,32}/`
 

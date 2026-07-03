@@ -359,7 +359,7 @@ Artifacts: `sim_a40_tp8_{extrap,measured}_*`, `vllm_a40_tp8_*`, `compare_tp8.py`
 Follow-up to the TP=8 study above, which concluded high-TP fidelity needs *a hierarchical
 interconnect + collective-overhead model, not better profiles*. The hierarchical model now
 exists (`config_builder._create_network_config` + top-level `tp_group_shape`; fabric preset
-`a40_8gpu_2socket` = `cluster_config/a40_8gpu_tp8_70b_3tier.json`), with **measured** (not
+`2socket_8npu_nvlink_bridge_per_2slot` = `cluster_config/a40_8gpu_tp8_70b_3tier.json`), with **measured** (not
 extrapolated) tp8 70B profiles and the 3-tier topology
 `npus_count=[2,2,2]`, `link_bw=[52.8, 24.5, 21.0]` (NVLink pair / intra-NUMA PCIe / cross-socket QPI).
 Question: does representing the topology correctly close the sim↔vLLM gap? Model:
@@ -411,7 +411,7 @@ For serving-throughput estimates on this fabric, scale sim output by **÷2.0** (
 Treat the throughput factor as a first-order correction for *this* fabric/model/TP point only;
 the latency behaviour needs a load-dependent collective-overhead model to be predictive.
 
-Artifacts: `cluster_config/a40_8gpu_tp8_70b_3tier.json`, `docs/dse/fabrics.yaml` (a40_8gpu_2socket),
+Artifacts: `cluster_config/a40_8gpu_tp8_70b_3tier.json`, `docs/dse/fabrics.yaml` (2socket_8npu_nvlink_bridge_per_2slot),
 `output/{bench_tp8_70b_3tier,sim_a40_2socket_tp8_70b,sim_lowrate_ttft}.csv`,
 `validation/vllm_a40_tp8_lowrate_results.jsonl`, `dataset/sharegpt_lowrate_ttft15.jsonl`;
 measured tp8 profiles under `perf_models/A40/meta-llama/Llama-3.1-70B/tp8/`.
