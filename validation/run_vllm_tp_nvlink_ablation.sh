@@ -58,7 +58,7 @@ run_one() {
   done
   [ "$ok" = 1 ] || { echo "ERROR: not ready"; docker exec "$CNAME" tail -60 /serve.log; docker rm -f "$CNAME"; exit 1; }
 
-  docker exec "$CNAME" bash -c 'grep -iE "via (NVL|P2P|SHM|direct)|NVLink" /serve.log | grep -iE "Channel|->" | head -40' > "$SERVELOG" 2>/dev/null || true
+  docker exec "$CNAME" bash -c 'grep -iE "ustom.?all.?reduce|is disabled|via (NVL|P2P|SHM|direct)" /serve.log | grep -iE "ustom|isabled|Channel|->" | head -50' > "$SERVELOG" 2>/dev/null || true
   echo "==> NCCL transport lines (first few) -> $SERVELOG"
   head -6 "$SERVELOG" 2>/dev/null || true
 
@@ -81,7 +81,14 @@ run_one() {
 
 trap 'docker rm -f vllm_${OUT_PREFIX}_nvlink vllm_${OUT_PREFIX}_pcie >/dev/null 2>&1 || true' EXIT
 
-run_one nvlink 0
-run_one pcie   1
+# ORDER controls run sequence (default nvlink first); set "pcie nvlink" to swap for order-effect control.
+ORDER="${ORDER:-nvlink pcie}"
+for tag in $ORDER; do
+  case "$tag" in
+    nvlink) run_one nvlink 0 ;;
+    pcie)   run_one pcie   1 ;;
+    *) echo "unknown run tag: $tag" ;;
+  esac
+done
 
 echo "ALL DONE. results: validation/${OUT_PREFIX}_{nvlink,pcie}_results.jsonl"
