@@ -51,3 +51,46 @@ def test_infeasible_when_memory_too_small():
         topology={"nodes": [{"id": "n0", "devices": [{"name": "A6000", "count": 4, "mem_gb": 1}]}]},
     )
     assert milp_solver.solve(spec) == []
+
+
+# --- Max-Flow link-bandwidth constraint (P/D KV transfer) ------------------
+def _pd_spec(link_bw, count=1):
+    """Two single-device nodes; forced cross-node P/D unless count allows co-location."""
+    return PlannerSpec.model_validate({
+        "model": {"name": "meta-llama/Llama-3.1-8B", "fp": 16},
+        "workload": {"dataset": "d.jsonl", "num_req": 10},
+        "topology": {
+            "nodes": [
+                {"id": "n0", "devices": [{"name": "A6000", "count": count, "mem_gb": 48}]},
+                {"id": "n1", "devices": [{"name": "A6000", "count": count, "mem_gb": 48}]},
+            ],
+            "links": [{"src": "n0", "dst": "n1", "bandwidth": link_bw, "latency": "0.0005ms"}],
+        },
+        "search_space": {
+            "pd_disaggregation": True, "tp_choices": [1],
+            "xpyd_prefill_range": [1, 1], "xpyd_decode_range": [1, 1],
+            "batch_tokens_choices": [2048],
+        },
+        "solver": {"top_k": 2, "time_limit_sec": 10},
+    })
+
+
+def test_flow_feasible_with_wide_link():
+    # 200Gbps = 25 GB/s >> ~1 GB/s KV demand -> cross-node P/D is feasible
+    allocs = milp_solver.solve(_pd_spec("200Gbps"))
+    assert allocs
+    roles = {i.pd_type for a in allocs for i in a.instances}
+    assert roles == {"prefill", "decode"}
+
+
+def test_flow_infeasible_with_narrow_link():
+    # 1Gbps = 0.125 GB/s < ~1 GB/s KV demand, single device per node forces
+    # cross-node placement -> no feasible allocation
+    assert milp_solver.solve(_pd_spec("1Gbps")) == []
+
+
+def test_narrow_link_ok_when_colocation_possible():
+    # 2 devices per node let the solver put prefill+decode on the same node,
+    # avoiding the (narrow) link entirely -> feasible again
+    allocs = milp_solver.solve(_pd_spec("1Gbps", count=2))
+    assert allocs

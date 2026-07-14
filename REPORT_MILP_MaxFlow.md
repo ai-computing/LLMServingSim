@@ -135,6 +135,40 @@ spec.yaml ──▶ [graph_model] ──▶ [milp_solver]  ─(Top-K)─▶ [con
 
 ---
 
+## 8.5 추가 구현 — Max-Flow 링크 대역폭 제약 (Stage 1)
+
+계획서 §5.3의 `_add_flow_constraints`를 구현했다. 계획의 정체성인 "MILP·**Max-Flow**"를 완성하는 부분이다.
+
+**모델링 근거**: 본 플래너에서 인스턴스는 노드-로컬이므로 TP all-reduce는 노드 내부 트래픽이다.
+**노드 간 링크를 소비하는 유일한 트래픽은 P/D 분리 시 prefill→decode의 KV 전송**이다.
+따라서 단일-커모디티 flow로 정식화한다(정수 스케일 `_FLOW_SCALE`, 단위 GB/s):
+
+```
+prod[v]     = Σ (prefill 템플릿 on v) n[i] · export_rate_i      # KV 생산 레이트
+f[u,v]      ∈ [0, capacity(u,v)]                                 # 링크 용량 = bw_gbps
+prod[v] + inflow(v) == consume[v] + outflow(v)                  # flow 보존
+consume[v]  ≤ ub · Σ(decode counts on v)                        # decode 있는 노드만 sink
+```
+
+보존식을 전 노드에 합하면 생산된 KV가 모두 decode 노드로 흘러야 하며, 링크가 좁으면 모델이 infeasible이 된다.
+비-P/D거나 단일 노드면 제약은 비활성 → **기존 실험(실험 A/B) 결과에 영향 없음**(회귀 확인 완료: 예제 6후보 그대로).
+
+**검증** (단위 테스트 3종 추가, 총 26 passed):
+
+| 시나리오 | 링크 | 디바이스/노드 | 결과 |
+|---|---|---|---|
+| 광대역 링크 | 200 Gbps (25 GB/s) | 1 | 후보 산출 ✅ (크로스노드 P/D 허용) |
+| 협대역 링크 | 1 Gbps (0.125 GB/s) | 1 | **후보 0** (링크 부족 → infeasible) |
+| 협대역 + 여유 디바이스 | 1 Gbps | 2 | 후보 산출 ✅ (**솔버가 P/D를 동일 노드에 배치해 링크 회피**) |
+
+세 번째 케이스는 Max-Flow 제약이 단순 차단이 아니라 **배치 결정(co-location)을 유도**함을 보여준다.
+
+**구현 중 발견한 버그**: OR-Tools `IntVar.Proto().domain`이 dangling reference를 반환해(첫 원소가 쓰레기 값)
+모델 메모리를 오염 → `Validate()`/`Solve()`에서 **세그폴트**. 변수 도메인 introspection을 제거하고
+상한을 디바이스 수에서 유도하도록 수정해 해결.
+
+---
+
 ## 9. 한계 및 향후 과제
 
 | 한계 | 비고 |

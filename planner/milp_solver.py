@@ -41,6 +41,16 @@ _HW_ACTIVE_POWER = {
 # memory feasibility proxy (weights + this many tokens of KV must fit).
 _KV_RESERVE_TOKENS = 8192
 
+# --- Max-Flow (P/D KV transfer) constants ---------------------------------
+# Coarse cross-node KV *export* rate demanded by one prefill instance, in GB/s
+# per unit of (rel_throughput * tp). Prefill produces prompt KV that must be
+# shipped to a decode instance; this proxies that rate. Deliberately simple --
+# Stage 2 simulation is the source of truth. Only P/D-disaggregated, multi-node
+# placements activate the flow constraint (TP traffic is intra-node here).
+_KV_EXPORT_PER_UNIT_GBPS = 1.0
+# integerization factor for CP-SAT (works in units of 1/_FLOW_SCALE GB/s)
+_FLOW_SCALE = 1000
+
 
 @dataclass(frozen=True)
 class _Template:
@@ -93,6 +103,71 @@ def _enumerate_templates(spec: PlannerSpec, inv: list[Device]) -> list[_Template
     return templates
 
 
+def _add_flow_constraints(model, n, templates, graph, inv) -> bool:
+    """Add the Max-Flow link-bandwidth constraint for P/D KV transfer.
+
+    Single-commodity flow: KV produced by prefill instances must be routable to
+    nodes hosting decode instances without any directed link carrying more than
+    its bandwidth. Node-local prefill+decode needs no link. Returns True if a
+    constraint was added (i.e. there was cross-node-capable structure).
+
+    Formulation (all quantities integer-scaled by _FLOW_SCALE, unit = GB/s):
+      prod[v]      = sum over prefill templates on v of n[i] * export_rate_i
+      has_decode[v]= 1 iff any decode instance is placed on v
+      f[u,v]       >= 0, <= capacity(u,v)               (edge capacity)
+      prod[v] + inflow(v) == consume[v] + outflow(v)    (flow conservation)
+      consume[v]   <= M * has_decode[v]                 (sink only where decode is)
+    Summing conservation over all nodes forces every produced unit to reach a
+    decode-hosting node; a too-small link then makes the model infeasible.
+    """
+    nodes = list(graph.nodes)
+    if len(nodes) < 2 or graph.number_of_edges() == 0:
+        return False  # single node / no links => KV transfer is intra-node
+
+    export = {}
+    for i, t in enumerate(templates):
+        if t.role == "prefill":
+            export[i] = max(1, int(round(
+                t.rel_throughput * t.tp * _KV_EXPORT_PER_UNIT_GBPS * _FLOW_SCALE)))
+    if not export:
+        return False  # no prefill instances => nothing to ship
+
+    prod = {v: [] for v in nodes}
+    decode_terms = {v: [] for v in nodes}
+    for i, t in enumerate(templates):
+        if t.role == "prefill" and t.node_id in prod:
+            prod[t.node_id].append(export[i] * n[i])
+        elif t.role == "decode" and t.node_id in decode_terms:
+            decode_terms[t.node_id].append(n[i])
+
+    # Upper bound on total KV production, used to size flow/consume vars.
+    # Derive it from device counts (each instance uses >=1 device, so instance
+    # count <= total devices). Do NOT introspect a var's proto domain here:
+    # IntVar.Proto() returns a dangling reference whose contents are garbage and
+    # reading it corrupts the model (segfault at Validate/Solve).
+    total_devices = sum(d.count for d in inv)
+    ub = max(1, max(export.values()) * max(1, total_devices))
+
+    # edge flow variables, bounded by link capacity
+    f = {}
+    for u, v, data in graph.edges(data=True):
+        cap = max(0, int(round(float(data.get("bw_gbps", 0.0)) * _FLOW_SCALE)))
+        f[(u, v)] = model.NewIntVar(0, cap, f"f_{u}_{v}")
+
+    for v in nodes:
+        # linear "decode present" gate: consume can be > 0 only if this node has
+        # at least one decode instance (dsum >= 1 => consume <= ub, else 0).
+        dsum = sum(decode_terms[v]) if decode_terms[v] else 0
+        consume = model.NewIntVar(0, ub, f"consume_{v}")
+        model.Add(consume <= ub * dsum)
+
+        inflow = [f[(u, v)] for u in nodes if (u, v) in f]
+        outflow = [f[(v, w)] for w in nodes if (v, w) in f]
+        prod_v = sum(prod[v]) if prod[v] else 0
+        model.Add(prod_v + sum(inflow) == consume + sum(outflow))
+    return True
+
+
 def _allocation_from_counts(counts: dict[int, int], templates: list[_Template],
                             spec: PlannerSpec, score: float) -> Allocation:
     instances: list[Instance] = []
@@ -122,11 +197,10 @@ def solve(spec: PlannerSpec, graph=None, power_lambda: float = 0.001) -> list[Al
     ``graph`` is accepted for API symmetry (device inventory can be derived from
     it); if None the inventory is built from the spec's topology.
     """
-    if graph is not None:
-        inv = device_inventory(graph)
-    else:
+    if graph is None:
         from .graph_model import build_graph
-        inv = device_inventory(build_graph(spec))
+        graph = build_graph(spec)
+    inv = device_inventory(graph)
 
     templates = _enumerate_templates(spec, inv)
     if not templates:
@@ -166,6 +240,9 @@ def solve(spec: PlannerSpec, graph=None, power_lambda: float = 0.001) -> list[Al
             if decode_terms:
                 model.Add(sum(decode_terms) >= ss.xpyd_decode_range[0])
                 model.Add(sum(decode_terms) <= ss.xpyd_decode_range[1])
+
+            # Max-Flow: cross-node P/D KV transfer must fit in link bandwidth
+            _add_flow_constraints(model, n, templates, graph, inv)
 
         # no-good cuts to force distinct successive solutions
         for fb in forbidden:
