@@ -1,2 +1,2 @@
 run_id,on_pareto,passed,score,batch_tokens,ttft_ms,tpot_ms,itl_p99_ms,throughput_toks_s,toks_per_wh,config_path,status
-cand_b3609f7ef8c3deb7,True,True,2151.4070,2048,30.260,16.139,32.889,934.57,3976.66,output/planner_experiments/runs/combined_2rep/configs/cand_b3609f7ef8c3deb7.json,ok
+cand_b3609f7ef8c3deb7,True,True,1321.7395,2048,54.769,26.285,38.550,599.46,2405.16,output/planner_experiments/runs/combined_2rep/configs/cand_b3609f7ef8c3deb7.json,ok
