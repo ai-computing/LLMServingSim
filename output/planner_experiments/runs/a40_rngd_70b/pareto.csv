@@ -1,0 +1,5 @@
+run_id,on_pareto,passed,score,batch_tokens,ttft_ms,tpot_ms,itl_p99_ms,throughput_toks_s,toks_per_wh,config_path,status
+cand_0baf3f021ddb84e7,False,True,73.6294,2048,136.068,92.731,138.621,62.53,84.73,output/planner_experiments/runs/a40_rngd_70b/configs/cand_0baf3f021ddb84e7.json,ok
+cand_d90f2d27d675a9b2,False,True,88.7603,2048,143.501,83.515,139.306,62.34,115.18,output/planner_experiments/runs/a40_rngd_70b/configs/cand_d90f2d27d675a9b2.json,ok
+cand_b947de80bf8841a4,True,True,294.4539,2048,102.334,59.636,69.199,153.99,434.92,output/planner_experiments/runs/a40_rngd_70b/configs/cand_b947de80bf8841a4.json,ok
+cand_c2a5f4c05289f378,True,True,341.7589,2048,147.883,83.309,104.040,127.39,556.12,output/planner_experiments/runs/a40_rngd_70b/configs/cand_c2a5f4c05289f378.json,ok

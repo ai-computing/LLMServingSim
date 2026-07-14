@@ -2,15 +2,24 @@
 
 We enumerate feasible instance *templates* -- (hardware, tp, role) triples whose
 memory fits -- and let the solver choose how many of each to deploy, subject to
-per-hardware device availability and (when P/D disaggregation is on) a
-prefill/decode balance window. The objective is a coarse linear throughput proxy
-minus a power penalty; Stage 2 (simulation) re-ranks the Top-K it returns.
+per-hardware device availability, (when P/D disaggregation is on) a prefill/decode
+balance window, and a Max-Flow link-bandwidth constraint for cross-node KV transfer.
 
-The proxy is deliberately transparent (documented constants) rather than
+Two coarse proxy objectives drive candidate generation: a throughput proxy
+(maximize) and a power proxy (minimize). Instead of collapsing them with a fixed
+weight, we run an **epsilon-constraint sweep**: maximize the throughput proxy
+subject to ``power <= eps_k`` for a grid of ``eps_k`` spanning the feasible power
+range. Each level yields a distinct point along the throughput/power trade-off,
+so the Top-K candidates are spread across the (proxy) Pareto front -- including
+non-convex regions a weighted sum would miss. Stage 2 (simulation) then measures
+real metrics and re-ranks.
+
+The proxies are deliberately transparent (documented constants) rather than
 precise: the plan delegates accuracy to the Stage-2 simulator.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from ortools.sat.python import cp_model
@@ -69,10 +78,14 @@ class _Template:
 def _memory_feasible(
     weight_bytes: float, kv_per_tok: float, tp: int, per_device_mem_gb: float
 ) -> bool:
-    """weights (sharded over tp) + KV reserve must fit in the TP group's memory."""
-    total_mem_bytes = tp * per_device_mem_gb * (1024 ** 3)
-    need = weight_bytes / tp + kv_per_tok * _KV_RESERVE_TOKENS
-    return need <= total_mem_bytes
+    """Per-NPU feasibility: a TP shard of the weights + KV reserve must fit on ONE
+    device. With tensor parallelism both weights and KV heads are split across the
+    tp ranks, so per-device need ~= (weights + KV_reserve) / tp. This matches the
+    simulator's MemoryModel, which rejects a config when a single NPU's shard
+    exceeds its memory (verified: 70B needs tp>=4 on 48GB devices)."""
+    per_device_mem_bytes = per_device_mem_gb * (1024 ** 3)
+    per_device_need = (weight_bytes + kv_per_tok * _KV_RESERVE_TOKENS) / tp
+    return per_device_need <= per_device_mem_bytes
 
 
 def _enumerate_templates(spec: PlannerSpec, inv: list[Device]) -> list[_Template]:
@@ -191,11 +204,82 @@ def _allocation_from_counts(counts: dict[int, int], templates: list[_Template],
                       meta={"stage": "milp", "counts": dict(counts)})
 
 
-def solve(spec: PlannerSpec, graph=None, power_lambda: float = 0.001) -> list[Allocation]:
-    """Return up to ``spec.solver.top_k`` distinct candidate allocations.
+_THR_SCALE = 1000  # integerization for the throughput proxy
 
-    ``graph`` is accepted for API symmetry (device inventory can be derived from
-    it); if None the inventory is built from the spec's topology.
+
+def _build_base_model(spec: PlannerSpec, templates: list[_Template], inv, graph):
+    """Create the CP-SAT model with all structural constraints (no objective).
+
+    Returns (model, n, thr_expr, pwr_expr) where n[i] is the instance count for
+    template i, thr_expr is the integer throughput proxy, and pwr_expr the integer
+    power proxy. Both proxies are linear in n.
+    """
+    model = cp_model.CpModel()
+    n = {}
+    for i, t in enumerate(templates):
+        hw_total = sum(d.count for d in inv if d.hardware == t.hardware and d.node_id == t.node_id)
+        n[i] = model.NewIntVar(0, hw_total // t.tp, f"n_{i}")
+
+    # device-capacity per (node, hardware)
+    for dev in inv:
+        using = [n[i] * templates[i].tp for i, t in enumerate(templates)
+                 if t.hardware == dev.hardware and t.node_id == dev.node_id]
+        if using:
+            model.Add(sum(using) <= dev.count)
+
+    # at least one instance overall
+    model.Add(sum(n.values()) >= 1)
+
+    # P/D balance window (xPyD) + Max-Flow link constraint
+    ss = spec.search_space
+    if ss.pd_disaggregation:
+        prefill_terms = [n[i] for i, t in enumerate(templates) if t.role == "prefill"]
+        decode_terms = [n[i] for i, t in enumerate(templates) if t.role == "decode"]
+        if prefill_terms:
+            model.Add(sum(prefill_terms) >= ss.xpyd_prefill_range[0])
+            model.Add(sum(prefill_terms) <= ss.xpyd_prefill_range[1])
+        if decode_terms:
+            model.Add(sum(decode_terms) >= ss.xpyd_decode_range[0])
+            model.Add(sum(decode_terms) <= ss.xpyd_decode_range[1])
+        _add_flow_constraints(model, n, templates, graph, inv)
+
+    thr_expr = sum(int(round(t.rel_throughput * t.tp * _THR_SCALE)) * n[i]
+                   for i, t in enumerate(templates))
+    pwr_expr = sum(int(round(t.power_w * t.tp)) * n[i]
+                   for i, t in enumerate(templates))
+    return model, n, thr_expr, pwr_expr
+
+
+def _solve_once(spec, templates, inv, graph, objective, sense, extra=None):
+    """Build the base model, apply one objective (+ optional extra constraint),
+    solve, and return (counts, thr_value, pwr_value) or None if infeasible."""
+    model, n, thr_expr, pwr_expr = _build_base_model(spec, templates, inv, graph)
+    if extra is not None:
+        extra(model, pwr_expr)
+    obj = thr_expr if objective == "thr" else pwr_expr
+    model.Maximize(obj) if sense == "max" else model.Minimize(obj)
+
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = max(1, spec.solver.time_limit_sec)
+    solver.parameters.num_search_workers = 8
+    status = solver.Solve(model)
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return None
+    counts = {i: int(solver.Value(n[i])) for i in n if solver.Value(n[i]) > 0}
+    if not counts:
+        return None
+    thr_val = sum(int(round(templates[i].rel_throughput * templates[i].tp * _THR_SCALE)) * c
+                  for i, c in counts.items())
+    pwr_val = sum(int(round(templates[i].power_w * templates[i].tp)) * c
+                  for i, c in counts.items())
+    return counts, thr_val, pwr_val
+
+
+def solve(spec: PlannerSpec, graph=None) -> list[Allocation]:
+    """Return up to ``spec.solver.top_k`` candidate allocations spread across the
+    proxy throughput/power Pareto front via an epsilon-constraint sweep.
+
+    ``graph`` is accepted for API symmetry; if None it is built from the spec.
     """
     if graph is None:
         from .graph_model import build_graph
@@ -207,78 +291,51 @@ def solve(spec: PlannerSpec, graph=None, power_lambda: float = 0.001) -> list[Al
         log.warning("no feasible instance templates (memory/tp constraints too tight)")
         return []
 
-    ss = spec.search_space
+    top_k = max(1, spec.solver.top_k)
+    steps = max(1, spec.solver.pareto_epsilon_steps)
+
+    # Anchors: max-throughput point (upper power bound) and min-power point.
+    hi = _solve_once(spec, templates, inv, graph, "thr", "max")
+    if hi is None:
+        log.warning("Stage-1 infeasible (no allocation satisfies structural constraints)")
+        return []
+    lo = _solve_once(spec, templates, inv, graph, "pwr", "min")
+    p_hi = hi[2]                       # power at max throughput
+    p_lo = lo[2] if lo else hi[2]      # min feasible power
+
+    # Epsilon grid over [p_lo, p_hi]; each level: maximize throughput s.t. power <= eps.
+    seen: set[str] = set()
     allocations: list[Allocation] = []
-    forbidden: list[dict[int, int]] = []
 
-    for _ in range(max(1, spec.solver.top_k)):
-        model = cp_model.CpModel()
-        # count var per template
-        n = {}
-        for i, t in enumerate(templates):
-            # upper bound: how many tp-groups of this hw fit on its node
-            hw_total = sum(d.count for d in inv if d.hardware == t.hardware and d.node_id == t.node_id)
-            n[i] = model.NewIntVar(0, hw_total // t.tp, f"n_{i}")
+    def _record(res):
+        if res is None:
+            return
+        counts, thr_val, _ = res
+        alloc = _allocation_from_counts(counts, templates, spec, thr_val / _THR_SCALE)
+        sig = alloc.signature()
+        if sig not in seen:
+            seen.add(sig)
+            allocations.append(alloc)
 
-        # device-capacity constraint per (node, hardware)
-        for dev in inv:
-            using = [n[i] * templates[i].tp for i, t in enumerate(templates)
-                     if t.hardware == dev.hardware and t.node_id == dev.node_id]
-            if using:
-                model.Add(sum(using) <= dev.count)
+    if p_hi <= p_lo:
+        # degenerate range (single achievable power level): just take the anchor
+        _record(hi)
+    else:
+        fracs = [1.0] if steps == 1 else [k / (steps - 1) for k in range(steps)]
+        for frac in fracs:
+            eps = int(math.floor(p_lo + (p_hi - p_lo) * frac))
+            res = _solve_once(spec, templates, inv, graph, "thr", "max",
+                              extra=lambda m, pwr, e=eps: m.Add(pwr <= e))
+            _record(res)
 
-        # at least one instance overall
-        model.Add(sum(n.values()) >= 1)
+    # Rank by throughput proxy (desc) and cap to top_k, preserving front spread.
+    allocations.sort(key=lambda a: a.proxy_score, reverse=True)
+    if len(allocations) > top_k:
+        # even subsample across the sorted front to keep diversity
+        idx = [round(i * (len(allocations) - 1) / (top_k - 1)) for i in range(top_k)] \
+            if top_k > 1 else [0]
+        allocations = [allocations[j] for j in sorted(set(idx))]
 
-        # P/D balance window (xPyD): total prefill / decode instance counts in range
-        if ss.pd_disaggregation:
-            prefill_terms = [n[i] for i, t in enumerate(templates) if t.role == "prefill"]
-            decode_terms = [n[i] for i, t in enumerate(templates) if t.role == "decode"]
-            if prefill_terms:
-                model.Add(sum(prefill_terms) >= ss.xpyd_prefill_range[0])
-                model.Add(sum(prefill_terms) <= ss.xpyd_prefill_range[1])
-            if decode_terms:
-                model.Add(sum(decode_terms) >= ss.xpyd_decode_range[0])
-                model.Add(sum(decode_terms) <= ss.xpyd_decode_range[1])
-
-            # Max-Flow: cross-node P/D KV transfer must fit in link bandwidth
-            _add_flow_constraints(model, n, templates, graph, inv)
-
-        # no-good cuts to force distinct successive solutions
-        for fb in forbidden:
-            # forbid the exact count vector: sum of |n_i - v_i| >= 1
-            diff_bools = []
-            for i, v in fb.items():
-                b = model.NewBoolVar(f"neq_{i}_{len(diff_bools)}")
-                model.Add(n[i] != v).OnlyEnforceIf(b)
-                model.Add(n[i] == v).OnlyEnforceIf(b.Not())
-                diff_bools.append(b)
-            model.AddBoolOr(diff_bools)
-
-        # objective: throughput proxy - lambda * power   (scaled to integers)
-        SCALE = 1000
-        obj_terms = []
-        for i, t in enumerate(templates):
-            # per-instance proxy throughput ~ rel_throughput * tp (aggregate compute)
-            tput = t.rel_throughput * t.tp
-            pwr = t.power_w * t.tp
-            coeff = int(round((tput - power_lambda * pwr) * SCALE))
-            obj_terms.append(coeff * n[i])
-        model.Maximize(sum(obj_terms))
-
-        solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = max(1, spec.solver.time_limit_sec)
-        solver.parameters.num_search_workers = 8
-        status = solver.Solve(model)
-        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            break
-
-        counts = {i: int(solver.Value(n[i])) for i in n if solver.Value(n[i]) > 0}
-        if not counts:
-            break
-        score = solver.ObjectiveValue() / SCALE
-        allocations.append(_allocation_from_counts(counts, templates, spec, score))
-        forbidden.append(counts)
-
-    log.info("Stage-1 produced %d candidate allocation(s)", len(allocations))
+    log.info("Stage-1 produced %d candidate allocation(s) via epsilon-sweep "
+             "(power range [%d, %d], %d steps)", len(allocations), p_lo, p_hi, steps)
     return allocations

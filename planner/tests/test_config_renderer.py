@@ -25,13 +25,16 @@ def test_render_schema_fields(spec, tmp_path):
 
     assert cfg["num_nodes"] == 1
     node = cfg["nodes"][0]
-    assert node["num_instances"] == 2
-    inst = node["instances"][0]
-    # TP -> npu_group, device count -> npu_num
-    assert inst["npu_group"] == 2
-    assert inst["npu_num"] == 2
-    assert inst["pd_type"] is None
-    assert set(inst.keys()) >= {"model_name", "hardware", "npu_mem", "npu_num", "npu_group", "pd_type"}
+    insts = node["instances"]
+    # H100 tp2 x1 replica -> 1 instance; A6000 tp1 x4 replicas -> 4 instances
+    assert node["num_instances"] == 5
+    # every config-instance is a single TP group: npu_group == 1, TP == npu_num
+    assert all(i["npu_group"] == 1 for i in insts)
+    h100 = next(i for i in insts if i["hardware"] == "H100")
+    assert h100["npu_num"] == 2 and h100["npu_group"] == 1  # TP = 2/1 = 2
+    a6000 = [i for i in insts if i["hardware"] == "A6000"]
+    assert len(a6000) == 4 and all(i["npu_num"] == 1 for i in a6000)  # 4x TP1 replicas
+    assert set(insts[0].keys()) >= {"model_name", "hardware", "npu_mem", "npu_num", "npu_group", "pd_type"}
 
 
 def test_cli_args_contain_required_flags(spec, tmp_path):

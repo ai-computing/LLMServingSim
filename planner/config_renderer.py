@@ -86,18 +86,24 @@ def render(
     for node_id, insts in by_node.items():
         inst_json = []
         for inst in insts:
-            inst_json.append({
-                "model_name": inst.model_name,
-                "hardware": inst.hardware,
-                "npu_mem": {
-                    "mem_size": inst.npu_mem_gb,
-                    "mem_bw": _HW_MEM_BW.get(inst.hardware, 768),
-                    "mem_latency": 0,
-                },
-                "npu_num": inst.npu_num,
-                "npu_group": inst.tp,
-                "pd_type": inst.pd_type,
-            })
+            # Emit ONE config-instance per replica, each a single TP group:
+            #   npu_num = TP degree, npu_group = 1.
+            # The simulator derives TP as npu_num // npu_group (verified against
+            # cluster_config/{h100_4gpu_tp4,a40_8gpu_tp8}_70b.json), so a single
+            # TP-t group is npu_num=t, npu_group=1 — NOT npu_group=t.
+            for _ in range(inst.replicas):
+                inst_json.append({
+                    "model_name": inst.model_name,
+                    "hardware": inst.hardware,
+                    "npu_mem": {
+                        "mem_size": inst.npu_mem_gb,
+                        "mem_bw": _HW_MEM_BW.get(inst.hardware, 768),
+                        "mem_latency": 0,
+                    },
+                    "npu_num": inst.tp,
+                    "npu_group": 1,
+                    "pd_type": inst.pd_type,
+                })
         node_obj = {
             "num_instances": len(inst_json),
             "cpu_mem": dict(_DEFAULT_CPU_MEM),

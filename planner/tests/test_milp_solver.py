@@ -94,3 +94,42 @@ def test_narrow_link_ok_when_colocation_possible():
     # avoiding the (narrow) link entirely -> feasible again
     allocs = milp_solver.solve(_pd_spec("1Gbps", count=2))
     assert allocs
+
+
+# --- epsilon-constraint Pareto sweep --------------------------------------
+def _hetero_spec(top_k=5, steps=5):
+    return PlannerSpec.model_validate({
+        "model": {"name": "meta-llama/Llama-3.1-8B", "fp": 16},
+        "workload": {"dataset": "d.jsonl", "num_req": 10},
+        "topology": {"nodes": [{"id": "n0", "devices": [
+            {"name": "H100", "count": 2, "mem_gb": 80},
+            {"name": "A6000", "count": 4, "mem_gb": 48},
+            {"name": "A5000", "count": 2, "mem_gb": 24},
+        ]}]},
+        "search_space": {"tp_choices": [1, 2, 4], "batch_tokens_choices": [2048]},
+        "solver": {"top_k": top_k, "time_limit_sec": 30, "pareto_epsilon_steps": steps},
+    })
+
+
+def test_epsilon_sweep_spans_front():
+    allocs = milp_solver.solve(_hetero_spec(top_k=5, steps=5))
+    # distinct candidates spread across the throughput/power trade-off
+    sigs = {a.signature() for a in allocs}
+    assert len(sigs) == len(allocs)
+    assert len(allocs) >= 3
+    scores = [a.proxy_score for a in allocs]
+    assert max(scores) > min(scores)          # not all the same point
+    assert max(scores) >= 3 * max(min(scores), 1e-9)  # meaningful spread
+
+
+def test_epsilon_respects_top_k_cap():
+    allocs = milp_solver.solve(_hetero_spec(top_k=3, steps=6))
+    assert len(allocs) <= 3
+
+
+def test_epsilon_single_step_returns_max_throughput():
+    one = milp_solver.solve(_hetero_spec(top_k=5, steps=1))
+    assert len(one) == 1
+    # the single point must be the global throughput-proxy maximizer
+    many = milp_solver.solve(_hetero_spec(top_k=8, steps=8))
+    assert one[0].proxy_score == max(a.proxy_score for a in many)
