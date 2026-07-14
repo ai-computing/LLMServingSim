@@ -31,6 +31,12 @@
             <input id="total-max" type="number" min="1" placeholder="(no cap)">
         </label>
     </div>
+    <div class="cc-row">
+        <label title="Physical interconnect of the target box. The TP group is decomposed onto its tiers (hierarchical tp_group_shape). 'Catalog default' uses each hardware's interconnect_bw_gbs as a flat link.">Interconnect fabric
+            <select id="fabric-select"></select>
+        </label>
+        <span id="fabric-desc" class="hint" style="align-self:flex-end"></span>
+    </div>
 </section>
 
 <section class="card">
@@ -57,12 +63,6 @@
         <label style="max-width: 160px">Timeout (s)
             <input id="timeout-s" type="number" min="10" step="10" value="600">
         </label>
-    </div>
-    <div class="cc-row">
-        <label title="Physical interconnect of the target box. The TP group is decomposed onto its tiers (hierarchical tp_group_shape). 'Catalog default' uses each hardware's interconnect_bw_gbs as a flat link.">Interconnect fabric
-            <select id="fabric-select"></select>
-        </label>
-        <span id="fabric-desc" class="hint" style="align-self:flex-end"></span>
     </div>
 </section>
 

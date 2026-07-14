@@ -1,0 +1,15 @@
+model: {name: "meta-llama/Llama-3.1-8B", fp: 16}
+workload: {dataset: "dataset/sharegpt_req100_rate10_llama.jsonl", num_req: 30}
+topology:
+  nodes:
+    - id: node0
+      devices: [{name: A6000, count: 4, mem_gb: 48}]
+  intra_node_bandwidth: "600GBps"
+profiles: {perf_root: "llm_profile/perf_models"}
+requirements:
+  ttft_ms: {constraint: "<=", value: 100000}
+  objectives:
+    - {metric: throughput, direction: max, weight: 0.6}
+    - {metric: toks_per_wh, direction: max, weight: 0.4}
+search_space: {tp_choices: [4], batch_tokens_choices: [2048]}
+solver: {top_k: 1, time_limit_sec: 10}

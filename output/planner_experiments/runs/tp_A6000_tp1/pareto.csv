@@ -1,0 +1,2 @@
+run_id,on_pareto,passed,score,batch_tokens,ttft_ms,tpot_ms,itl_p99_ms,throughput_toks_s,toks_per_wh,config_path,status
+cand_f28ca9e1ebcaa6d9,True,True,1901.6845,2048,72.623,28.245,69.716,587.84,3872.45,output/planner_experiments/runs/tp_A6000_tp1/configs/cand_f28ca9e1ebcaa6d9.json,ok

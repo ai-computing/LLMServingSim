@@ -166,8 +166,8 @@ def test_build_cluster_json_no_overhead_key_when_none():
 def test_load_fabrics_has_a40_preset():
     load_fabrics.cache_clear()
     fabs = load_fabrics()
-    assert "a40_8gpu_2socket" in fabs
-    tiers = fabs["a40_8gpu_2socket"]["tiers"]
+    assert "2socket_8npu_nvlink_bridge_per_2slot" in fabs
+    tiers = fabs["2socket_8npu_nvlink_bridge_per_2slot"]["tiers"]
     # 4 tiers: nvlink/pcie/qpi intra-box + cross-node 200G IB (8 GPU/node, up to 2 nodes).
     assert [t["size"] for t in tiers] == [2, 2, 2, 2]
     ib = tiers[-1]
@@ -177,7 +177,7 @@ def test_load_fabrics_has_a40_preset():
 
 def test_a40_preset_carries_calibrated_overhead():
     load_fabrics.cache_clear()
-    co = load_fabrics()["a40_8gpu_2socket"].get("collective_overhead")
+    co = load_fabrics()["2socket_8npu_nvlink_bridge_per_2slot"].get("collective_overhead")
     assert co and co["enabled"] and co["socket_size"] == 4
     # cross-node IB collective overhead gates on the node boundary (TP > 8).
     assert co["node_size"] == 8
@@ -189,7 +189,7 @@ def test_a40_preset_tp16_crosses_node_on_ib():
     """TP16 on the A40 box spans 2 nodes: outermost TP dim must use the 25 GB/s
     (200 Gbps) IB link, matching cluster_config/a40_16gpu_tp16_70b_4tier.json."""
     load_fabrics.cache_clear()
-    fabric = load_fabrics()["a40_8gpu_2socket"]
+    fabric = load_fabrics()["2socket_8npu_nvlink_bridge_per_2slot"]
     ic = resolve_interconnect(_spec("A40", 16), fabric, HW_META)
     assert ic["tp_group_shape"] == [2, 2, 2, 2]
     assert ic["link_bw"] == [52.8, 24.5, 21.0, 25.0]
@@ -199,8 +199,27 @@ def test_a40_preset_tp16_crosses_node_on_ib():
 def test_a40_preset_tp8_stays_intra_node():
     """TP8 fits one box: must NOT consume the IB tier (no 25 GB/s dim)."""
     load_fabrics.cache_clear()
-    fabric = load_fabrics()["a40_8gpu_2socket"]
+    fabric = load_fabrics()["2socket_8npu_nvlink_bridge_per_2slot"]
     ic = resolve_interconnect(_spec("A40", 8), fabric, HW_META)
     assert ic["tp_group_shape"] == [2, 2, 2]
     assert ic["link_bw"] == [52.8, 24.5, 21.0]
     assert 25.0 not in ic["link_bw"]
+
+
+def test_pcie_only_preset_no_nvlink_tier():
+    """PCIe-only 2-socket fabric (for NVLink-less NPUs like RNGD): 4 NPU/socket on
+    PCIe, cross-socket QPI, cross-node IB — no NVLink tier."""
+    load_fabrics.cache_clear()
+    fabric = load_fabrics()["2socket_8npu_pcie_only"]
+    assert [t["name"] for t in fabric["tiers"]] == ["pcie", "qpi", "ib"]
+    assert [t["size"] for t in fabric["tiers"]] == [4, 2, 2]
+    # TP4 stays within one socket (flat PCIe), no cross-socket/cross-node dim.
+    assert resolve_interconnect(_spec("RNGD", 4), fabric, HW_META)["link_bw"] == [32.0]
+    # TP8 crosses the socket (QPI) but not the node.
+    ic8 = resolve_interconnect(_spec("RNGD", 8), fabric, HW_META)
+    assert ic8["tp_group_shape"] == [4, 2]
+    assert ic8["link_bw"] == [32.0, 21.0]
+    # TP16 crosses the node on 200G IB.
+    ic16 = resolve_interconnect(_spec("RNGD", 16), fabric, HW_META)
+    assert ic16["tp_group_shape"] == [4, 2, 2]
+    assert ic16["link_bw"] == [32.0, 21.0, 25.0]

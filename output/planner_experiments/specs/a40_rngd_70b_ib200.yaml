@@ -1,0 +1,25 @@
+# 2 servers: node0 = A40 x8, node1 = RNGD x8, linked by InfiniBand 200Gb.
+# Llama-3.1-70B. TP fixed to 4 (only profile both A40 and RNGD share for 70B).
+model: {name: "meta-llama/Llama-3.1-70B", fp: 16}
+workload: {dataset: "dataset/sharegpt_req100_rate10_llama.jsonl", num_req: 16}
+topology:
+  nodes:
+    - id: node0
+      devices: [{name: A40,  count: 8, mem_gb: 48}]
+    - id: node1
+      devices: [{name: RNGD, count: 8, mem_gb: 48}]
+  links:
+    - {src: node0, dst: node1, bandwidth: "200Gbps", latency: "0.001ms"}
+  intra_node_bandwidth: "600GBps"
+profiles: {perf_root: "llm_profile/perf_models"}
+requirements:
+  ttft_ms: {constraint: "<=", value: 100000}
+  objectives:
+    - {metric: throughput,  direction: max, weight: 0.5}
+    - {metric: toks_per_wh, direction: max, weight: 0.5}
+search_space:
+  pd_disaggregation: false
+  tp_choices: [4]
+  pp_choices: [1]
+  batch_tokens_choices: [2048]
+solver: {top_k: 4, time_limit_sec: 30, pareto_epsilon_steps: 4}

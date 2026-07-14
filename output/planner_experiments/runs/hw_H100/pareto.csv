@@ -1,0 +1,2 @@
+run_id,on_pareto,passed,score,batch_tokens,ttft_ms,tpot_ms,itl_p99_ms,throughput_toks_s,toks_per_wh,config_path,status
+cand_ec8dd2384a6ba5f0,True,True,2421.6132,2048,21.930,12.774,16.811,1141.92,4341.15,output/planner_experiments/runs/hw_H100/configs/cand_ec8dd2384a6ba5f0.json,ok
