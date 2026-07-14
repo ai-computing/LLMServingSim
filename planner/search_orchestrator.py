@@ -9,7 +9,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 from . import config_renderer, milp_solver, objective
 from .graph_model import build_graph
@@ -63,6 +63,15 @@ def _expand(spec: PlannerSpec, allocations: list[Allocation], out_dir: Path):
     return candidates
 
 
+def _hw_summary(c: CandidateResult) -> str:
+    """Readable hardware layout for one candidate (for UI/event display)."""
+    parts = []
+    for i in c.allocation.instances:
+        role = f"/{i.pd_type}" if i.pd_type else ""
+        parts.append(f"{i.hardware}x{i.replicas}(tp{i.tp}{role})")
+    return ", ".join(parts)
+
+
 def run(
     spec_path: str | Path,
     out_dir: str | Path = "planner_out",
@@ -70,12 +79,42 @@ def run(
     dry_run: bool = False,
     skip_repo_validation: bool = False,
     timeout_sec: int = 1800,
+    on_event: Optional[Callable[[dict], None]] = None,
 ) -> PlannerResult:
+    """Load a spec from disk and run the pipeline (see :func:`run_spec`)."""
     spec = load_spec(spec_path)
     if not skip_repo_validation:
         problems = spec.validate_against_repo()
         if problems:
             raise ValueError("spec validation failed:\n  - " + "\n  - ".join(problems))
+    return run_spec(spec, out_dir=out_dir, jobs=jobs, dry_run=dry_run,
+                    timeout_sec=timeout_sec, on_event=on_event)
+
+
+def run_spec(
+    spec: PlannerSpec,
+    out_dir: str | Path = "planner_out",
+    jobs: int = 4,
+    dry_run: bool = False,
+    timeout_sec: int = 1800,
+    on_event: Optional[Callable[[dict], None]] = None,
+) -> PlannerResult:
+    """Run the two-stage pipeline on an already-loaded spec.
+
+    ``on_event`` (optional) is called with progress dicts as work completes:
+      {"type": "stage1", "candidates": [{run_id, batch_tokens, hw_summary}, ...]}
+      {"type": "candidate", "run_id", "state": "done"|"infeasible",
+                            "passed", "metrics", "reason"}
+      {"type": "finished", "best_run_id", "pareto": [run_id, ...],
+                           "num_passed", "num_candidates"}
+    The callback may be invoked from worker threads, so it must be thread-safe.
+    """
+    def _emit(ev: dict) -> None:
+        if on_event is not None:
+            try:
+                on_event(ev)
+            except Exception:  # never let UI wiring break the run
+                log.exception("on_event callback raised")
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -84,12 +123,21 @@ def run(
     allocations = milp_solver.solve(spec, graph=graph)
     if not allocations:
         log.warning("Stage-1 found no feasible allocations")
+        _emit({"type": "stage1", "candidates": []})
+        _emit({"type": "finished", "best_run_id": None, "pareto": [],
+               "num_passed": 0, "num_candidates": 0})
         return PlannerResult(spec=spec, dry_run=dry_run)
 
     candidates = _expand(spec, allocations, out_dir)
     result = PlannerResult(spec=spec, candidates=candidates, dry_run=dry_run)
+    _emit({"type": "stage1", "candidates": [
+        {"run_id": c.run_id, "batch_tokens": c.batch_tokens, "hw_summary": _hw_summary(c)}
+        for c in candidates
+    ]})
     if dry_run:
         log.info("dry run: rendered %d candidate config(s), skipping simulation", len(candidates))
+        _emit({"type": "finished", "best_run_id": None, "pareto": [],
+               "num_passed": 0, "num_candidates": len(candidates)})
         return result
 
     # Stage 2: evaluate in parallel
@@ -99,10 +147,14 @@ def run(
         )
         if isinstance(res, Infeasible):
             c.infeasible_reason = res.reason
+            _emit({"type": "candidate", "run_id": c.run_id, "state": "infeasible",
+                   "passed": False, "reason": res.reason})
             return c
         c.metrics = res
         c.passed, c.violations = objective.check_constraints(res, spec.requirements)
         c.score = objective.score(res, spec.requirements)
+        _emit({"type": "candidate", "run_id": c.run_id, "state": "done",
+               "passed": c.passed, "metrics": res.as_row()})
         return c
 
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
@@ -120,4 +172,8 @@ def run(
         "Stage-2 done: %d candidates, %d passed SLO, %d on Pareto front",
         len(candidates), len(passing), len(result.pareto),
     )
+    _emit({"type": "finished",
+           "best_run_id": result.best.run_id if result.best else None,
+           "pareto": list(result.pareto),
+           "num_passed": len(passing), "num_candidates": len(candidates)})
     return result

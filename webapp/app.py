@@ -99,6 +99,10 @@ _jinja.globals["static"] = _static_url
 from .dse.server import dse_router  # noqa: E402
 app.include_router(dse_router, prefix="/api/dse")
 
+# Planner (MILP/Max-Flow two-stage planner) routes under /api/planner.
+from .planner_server import planner_router  # noqa: E402
+app.include_router(planner_router, prefix="/api/planner")
+
 
 # ---------------------------------------------------------------------------
 # DSE — HTML pages (server-rendered Jinja templates)
@@ -117,6 +121,25 @@ async def dse_progress_page(job_id: str, request: Request) -> HTMLResponse:
 @app.get("/dse/jobs/{job_id}/results", response_class=HTMLResponse)
 async def dse_results_page(job_id: str, request: Request) -> HTMLResponse:
     return render("dse_results.html", title=f"DSE Results — {job_id}", job_id=job_id)
+
+
+# ---------------------------------------------------------------------------
+# Planner (MILP/Max-Flow) — HTML pages
+# ---------------------------------------------------------------------------
+
+@app.get("/planner", response_class=HTMLResponse)
+async def planner_explore_page(request: Request) -> HTMLResponse:
+    return render("planner_explore.html", title="Planner")
+
+
+@app.get("/planner/jobs/{job_id}", response_class=HTMLResponse)
+async def planner_progress_page(job_id: str, request: Request) -> HTMLResponse:
+    return render("planner_progress.html", title=f"Planner — {job_id}", job_id=job_id)
+
+
+@app.get("/planner/jobs/{job_id}/results", response_class=HTMLResponse)
+async def planner_results_page(job_id: str, request: Request) -> HTMLResponse:
+    return render("planner_results.html", title=f"Planner Results — {job_id}", job_id=job_id)
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -149,6 +172,9 @@ _NAV_MAP = {
     "dse_progress.html":   "dse",
     "dse_results.html":    "dse",
     "dse_jobs_list.html":  "dse",
+    "planner_explore.html":  "planner",
+    "planner_progress.html": "planner",
+    "planner_results.html":  "planner",
 }
 
 
