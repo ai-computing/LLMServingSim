@@ -1,0 +1,2 @@
+run_id,on_pareto,passed,score,batch_tokens,ttft_ms,tpot_ms,itl_p99_ms,throughput_toks_s,toks_per_wh,config_path,status
+cand_cc09688220e1415e,True,True,1780.5517,2048,61.468,26.729,27.507,594.87,3559.08,output/planner_experiments/runs/pd_1p1d/configs/cand_cc09688220e1415e.json,ok

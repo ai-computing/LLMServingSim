@@ -127,6 +127,39 @@ spec.yaml ──▶ [graph_model] ──▶ [milp_solver]  ─(Top-K)─▶ [con
 
 ---
 
+## 7.5 실험 C — P/D 분리 E2E 실측 검증
+
+**목적**: 플래너가 P/D 분리(prefill/decode 인스턴스 분리) 배치를 렌더하고, 시뮬레이터가 실제로
+prefill→decode KV 핸드오프를 수행하는지 end-to-end로 검증. 동일 자원(2× A6000)을
+(a) **1P+1D 분리** vs (b) **2 복제본(combined, DP)** 로 구성해 비교.
+
+**P/D 동작 실측 증거** (시뮬레이터 stdout):
+```
+[Router] Added 8 requests to scheduler[0] (prefill type)
+[Router] Added 0 requests to scheduler[1] (decode type)
+[Scheduler] [inst=0] Request #0 is prefill done
+[Scheduler] [inst=0] Request #0 is sent to decode instance      # ← prefill→decode 전송
+[TraceGenerator] [inst=1] Batch #0 ... total_len=1 kv_cache_len=26  # ← decode가 전달받은 KV로 생성
+```
+inst0=prefill, inst1=decode로 분리 동작하며 KV 핸드오프가 설계대로 일어남을 확인했다.
+
+![Experiment C](output/planner_experiments/figures/fig3_pd_vs_combined.png)
+
+| 구성 | TTFT(ms) | TPOT(ms) | ITL-p99(ms) | Throughput(tok/s) | toks/Wh |
+|---|---|---|---|---|---|
+| 1P+1D (분리) | 61.47 | 26.73 | **27.51** | 594.87 | 3559 |
+| **2 복제본 (DP)** | **30.26** | **16.14** | 32.89 | **934.57** | **3977** |
+
+**관찰**
+- 이 워크로드(30 req, 중간 부하)에서는 **combined 2-복제본이 P/D 분리를 대부분 지표에서 압도**(처리량 1.57×, TTFT·TPOT·에너지 우위). P/D는 **ITL-p99만 소폭 우수**(27.5 vs 32.9).
+- 이유: 1P+1D는 GPU 하나를 prefill 전용·하나를 decode 전용으로 고정 → 저부하에서 각 풀이 유휴가 되어 활용도가 낮다. 반면 2 복제본은 두 GPU가 각자 prefill+decode를 모두 처리해 항상 바쁘다.
+- P/D 분리의 이점(간섭 제거·독립 스케일링)은 **고부하·대규모·P/D 불균형**에서 나타난다. 2-GPU·저부하는 P/D에 불리한 조건이며, 플래너의 파레토 랭킹이 이를 정확히 포착했다(combined가 지배).
+
+**검증 결론**: P/D 분리 파이프라인(렌더→시뮬→KV 전송→파싱)이 실측으로 동작함을 확인했고,
+동시에 "P/D가 항상 유리한 것은 아니다"라는 비자명한 결과를 2단계 플래너가 드러냈다.
+
+---
+
 ## 8. 결론
 
 - 계획서의 2단계(MILP → 시뮬 검증) 플래너가 **실제 시뮬레이터와 통합되어 동작**함을 확인했다.
@@ -203,5 +236,7 @@ python output/planner_experiments/make_figures.py
 **아티팩트**
 - 실험 스펙: `output/planner_experiments/specs/*.yaml`
 - 실행 결과: `output/planner_experiments/runs/*/pareto.csv`
-- 그림: `output/planner_experiments/figures/{fig1_hardware,fig2_tp_scaling}.png`
-- 단위 테스트: `pytest planner/tests/`
+- 그림: `output/planner_experiments/figures/{fig1_hardware,fig2_tp_scaling,fig3_pd_vs_combined}.png`
+  (생성: `make_figures.py`, `make_pd_figure.py`)
+- P/D 실측 증거 로그: 실험 C의 시뮬레이터 stdout (prefill→decode 전송)
+- 단위 테스트: `pytest planner/tests/` (26 passed, Max-Flow 3종 포함)
